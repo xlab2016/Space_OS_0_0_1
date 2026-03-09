@@ -99,6 +99,25 @@ int early_printk(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 #define pr_debug(fmt, ...) ((void)0)
 #endif
 
+/**
+ * ksnprintf - Kernel snprintf
+ * @buf: Output buffer
+ * @size: Buffer size
+ * @fmt: Format string
+ *
+ * Return: Number of characters written (not including null terminator)
+ */
+int ksnprintf(char *buf, size_t size, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+
+/**
+ * kvsnprintf_pub - Kernel vsnprintf (public version)
+ * @buf: Output buffer
+ * @size: Buffer size
+ * @fmt: Format string
+ * @args: va_list arguments
+ */
+int kvsnprintf_pub(char *buf, size_t size, const char *fmt, __builtin_va_list args);
+
 /* Convenience macros */
 #define pr_emerg(fmt, ...)   printk(KERN_EMERG fmt, ##__VA_ARGS__)
 #define pr_alert(fmt, ...)   printk(KERN_ALERT fmt, ##__VA_ARGS__)

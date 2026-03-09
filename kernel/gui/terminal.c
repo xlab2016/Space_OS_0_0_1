@@ -10,7 +10,12 @@
 #include "syscall/syscall.h"
 #include "types.h"
 
-/* Forward declare process execution */
+/* Kernel-internal Magic language compiler (spc) and interpreter (spe).
+ * These replace the ELF-based process_exec_args() calls that caused GUI
+ * freezes due to kapi-ABI vs musl-ELF ABI incompatibility. */
+#include "magic/magic_kern.h"
+
+/* Forward declare process execution for generic ELF binaries */
 extern int process_exec_args(const char *path, int argc, char **argv);
 
 /* Forward declare window type */
@@ -564,7 +569,7 @@ void term_execute_command(struct terminal *term, const char *cmd) {
     term_puts(term, "  nslookup  - DNS lookup\n");
     term_puts(term, "  curl/wget - HTTP request\n");
   } else if (str_starts_with(cmd, "spc ") || (cmd[0]=='s' && cmd[1]=='p' && cmd[2]=='c' && cmd[3]=='\0')) {
-    /* Magic language compiler: /bin/spc <args> */
+    /* Magic language compiler: run kernel-internal spc (no process spawn) */
     const char *args = cmd + 3;
     while (*args == ' ') args++;
 
@@ -572,7 +577,6 @@ void term_execute_command(struct terminal *term, const char *cmd) {
       term_puts(term, "\033[33mUsage:\033[0m spc <file.agi> [--agiasm]\n");
       term_puts(term, "  Compiles Magic language source to .agic bytecode\n");
     } else {
-      /* Build argv: { "/bin/spc", arg1, [arg2], NULL } */
       static char spc_arg1[256];
       static char spc_arg2[256];
       const char *p = args;
@@ -592,28 +596,29 @@ void term_execute_command(struct terminal *term, const char *cmd) {
         spc_arg1[i] = '\0';
       }
 
-      static const char *spc_argv3[4];
-      spc_argv3[0] = "/bin/spc";
-      spc_argv3[1] = spc_arg1;
+      static char *spc_argv[4];
+      static char spc_argv0[] = "spc";
+      spc_argv[0] = spc_argv0;
+      spc_argv[1] = spc_arg1;
+      int spc_argc;
       if (a2 > 0) {
-        spc_argv3[2] = spc_arg2;
-        spc_argv3[3] = 0;
+        spc_argv[2] = spc_arg2;
+        spc_argv[3] = NULL;
+        spc_argc = 3;
       } else {
-        spc_argv3[2] = 0;
+        spc_argv[2] = NULL;
+        spc_argc = 2;
       }
-      int spc_argc = (a2 > 0) ? 3 : 2;
 
-      term_puts(term, "\033[36m[spc]\033[0m Running Magic compiler...\n");
-      term_elf_io_start(term);
-      int rc = process_exec_args("/bin/spc", spc_argc, (char **)spc_argv3);
-      term_elf_io_stop();
-      if (rc < 0) {
-        term_puts(term, "\033[31mspc:\033[0m /bin/spc not found or failed\n");
-        term_puts(term, "  (Ensure the OS was built with Magic tools)\n");
-      }
+      /* Redirect magic output to this terminal, run in-kernel (no freeze) */
+      kern_magic_set_output_hook(gui_term_stdout_hook);
+      elf_io_terminal = term;
+      kern_spc_run(spc_argc, spc_argv);
+      kern_magic_set_output_hook(NULL);
+      elf_io_terminal = NULL;
     }
   } else if (str_starts_with(cmd, "spe ") || (cmd[0]=='s' && cmd[1]=='p' && cmd[2]=='e' && cmd[3]=='\0')) {
-    /* Magic language emulator: /bin/spe <args> */
+    /* Magic language interpreter: run kernel-internal spe (no process spawn) */
     const char *args = cmd + 3;
     while (*args == ' ') args++;
 
@@ -640,25 +645,26 @@ void term_execute_command(struct terminal *term, const char *cmd) {
         spe_arg1[i] = '\0';
       }
 
-      static const char *spe_argv3[4];
-      spe_argv3[0] = "/bin/spe";
-      spe_argv3[1] = spe_arg1;
+      static char *spe_argv[4];
+      static char spe_argv0[] = "spe";
+      spe_argv[0] = spe_argv0;
+      spe_argv[1] = spe_arg1;
+      int spe_argc;
       if (a2 > 0) {
-        spe_argv3[2] = spe_arg2;
-        spe_argv3[3] = 0;
+        spe_argv[2] = spe_arg2;
+        spe_argv[3] = NULL;
+        spe_argc = 3;
       } else {
-        spe_argv3[2] = 0;
+        spe_argv[2] = NULL;
+        spe_argc = 2;
       }
-      int spe_argc = (a2 > 0) ? 3 : 2;
 
-      term_puts(term, "\033[36m[spe]\033[0m Running Magic emulator...\n");
-      term_elf_io_start(term);
-      int rc = process_exec_args("/bin/spe", spe_argc, (char **)spe_argv3);
-      term_elf_io_stop();
-      if (rc < 0) {
-        term_puts(term, "\033[31mspe:\033[0m /bin/spe not found or failed\n");
-        term_puts(term, "  (Ensure the OS was built with Magic tools)\n");
-      }
+      /* Redirect magic output to this terminal, run in-kernel (no freeze) */
+      kern_magic_set_output_hook(gui_term_stdout_hook);
+      elf_io_terminal = term;
+      kern_spe_run(spe_argc, spe_argv);
+      kern_magic_set_output_hook(NULL);
+      elf_io_terminal = NULL;
     }
   } else if (str_starts_with(cmd, "ls")) {
     /* Optional argument: ls [path] */
