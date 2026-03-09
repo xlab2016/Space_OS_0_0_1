@@ -1,4 +1,4 @@
-﻿/*
+/*
  * SPACE-OS Kernel - ASLR Implementation
  *
  * Uses hardware timer counter as entropy source for address randomization.
@@ -120,10 +120,12 @@ uint64_t aslr_heap_offset(void) {
 }
 
 uint64_t aslr_exec_offset(void) {
-  uint64_t random = aslr_random();
-  /* 64KB aligned for ELF segment alignment */
-  uint64_t offset = (random & ((1ULL << ASLR_EXEC_BITS) - 1)) << 16;
-  return offset;
+  /* TEMP: disable exec ASLR for now to keep user programs
+   * within the valid physical RAM window on QEMU (we only
+   * have a few hundred MB mapped). Once we have a proper
+   * userspace VM layout, this can be switched back to a
+   * randomized offset. */
+  return 0;
 }
 
 uint64_t aslr_mmap_offset(void) {

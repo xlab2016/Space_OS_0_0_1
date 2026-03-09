@@ -109,6 +109,9 @@ struct terminal {
 
 static struct terminal *active_terminal = NULL;
 
+/* Forward declaration for character output */
+void term_putc(struct terminal *term, char c);
+
 /* ===================================================================== */
 /* ELF Process I/O Hooks                                                  */
 /* ===================================================================== */
@@ -658,14 +661,32 @@ void term_execute_command(struct terminal *term, const char *cmd) {
       }
     }
   } else if (str_starts_with(cmd, "ls")) {
-    const char *path = term->cwd[0] ? term->cwd : "/";
+    /* Optional argument: ls [path] */
+    const char *arg = cmd + 2;
+    while (*arg == ' ')
+      arg++;
+
+    char path_buf[256];
+    const char *path;
+
+    if (*arg) {
+      /* Resolve relative/absolute path against CWD */
+      build_path(term, arg, path_buf, sizeof(path_buf));
+      path = path_buf[0] ? path_buf : "/";
+    } else {
+      /* No argument: list current directory */
+      path = term->cwd[0] ? term->cwd : "/";
+    }
+
     struct file *dir = vfs_open(path, O_RDONLY, 0);
     if (dir) {
       vfs_readdir(dir, term, ls_callback);
       vfs_close(dir);
       term_puts(term, "\n");
     } else {
-      term_puts(term, "ls: Failed to open root directory\n");
+      term_puts(term, "ls: Failed to open directory: ");
+      term_puts(term, path);
+      term_puts(term, "\n");
     }
   } else if (str_starts_with(cmd, "pwd")) {
     if (term->cwd[0])

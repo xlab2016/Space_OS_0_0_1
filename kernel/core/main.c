@@ -317,6 +317,33 @@ static void init_subsystems(void *dtb) {
                     "    print(add(42, 7));\n"
                     "}\n");
 
+  /* Magic language demo directory and file (AGI) */
+  vfs_mkdir("/examples/magic", 0755);
+  {
+    static const char magic_hello_src[] =
+        "@ AGI 1.0\n"
+        "program HelloWorld\n"
+        "\n"
+        "entrypoint\n"
+        "{\n"
+        "  asm {\n"
+        "    push string: \"Hello from Space OS Magic Language!\"\n"
+        "    push 1\n"
+        "    call print\n"
+        "  }\n"
+        "}\n";
+
+    struct file *magic_hello =
+        vfs_open("/examples/magic/hello.agi", O_CREAT | O_WRONLY, 0644);
+    if (magic_hello) {
+      size_t magic_len = 0;
+      while (magic_hello_src[magic_len])
+        magic_len++;
+      vfs_write(magic_hello, magic_hello_src, magic_len);
+      vfs_close(magic_hello);
+    }
+  }
+
   printk(KERN_INFO "  Mounting sysfs...\n");
   printk(KERN_INFO "  Mounting devfs...\n");
 

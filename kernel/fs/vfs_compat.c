@@ -1,4 +1,4 @@
-﻿/*
+/*
  * SPACE-OS VFS Compatibility Layer Implementation
  *
  * Provides simple VibeOS-compatible VFS functions.
@@ -18,6 +18,9 @@
 #include "../apps/doom1_wad.h"
 #define DOOM_WAD_DATA doom1_wad
 #define DOOM_WAD_SIZE sizeof(doom1_wad)
+
+/* Embedded userspace apps (spc/spe, etc.) */
+#include "../include/apps/embedded_apps.h"
 
 /* Current working directory */
 static char cwd[256] = "/";
@@ -105,6 +108,18 @@ vfs_node_t *vfs_lookup(const char *path) {
            (unsigned)DOOM_WAD_SIZE);
     return node;
   }
+  /* Magic language tools (embedded spc/spe binaries) */
+  else if (strcmp_simple(path, "/bin/spc") == 0) {
+    node->size = spc_bin_len;
+    node->internal = (void *)spc_bin;
+    printk("[VFS] Found /bin/spc (%u bytes)\n", (unsigned)spc_bin_len);
+    return node;
+  } else if (strcmp_simple(path, "/bin/spe") == 0) {
+    node->size = spe_bin_len;
+    node->internal = (void *)spe_bin;
+    printk("[VFS] Found /bin/spe (%u bytes)\n", (unsigned)spe_bin_len);
+    return node;
+  }
 
   /* Fallback: Check RAMFS for the file */
   extern int ramfs_lookup_path_info(const char *path, size_t *out_size,
@@ -162,6 +177,21 @@ int vfs_read_compat(vfs_node_t *node, char *buf, size_t size, size_t offset) {
       const unsigned char *src = DOOM_WAD_DATA + offset;
       for (size_t i = 0; i < to_read; i++) {
         buf[i] = src[i];
+      }
+    }
+    return (int)to_read;
+  }
+
+  /* Embedded Magic tools (spc/spe) */
+  if (node->internal == (void *)spc_bin ||
+      node->internal == (void *)spe_bin) {
+    size_t avail = node->size > offset ? node->size - offset : 0;
+    size_t to_read = size < avail ? size : avail;
+
+    if (to_read > 0) {
+      const unsigned char *src = (const unsigned char *)node->internal;
+      for (size_t i = 0; i < to_read; i++) {
+        buf[i] = src[offset + i];
       }
     }
     return (int)to_read;

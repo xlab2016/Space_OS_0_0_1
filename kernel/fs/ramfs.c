@@ -781,6 +781,7 @@ int ramfs_lookup_path_info(const char *path, size_t *out_size, int *out_is_dir,
     *out_size = current->size;
   if (out_is_dir)
     *out_is_dir = S_ISDIR(current->mode) ? 1 : 0;
+  /* Return pointer to file data buffer for compatibility callers */
   if (out_data)
     *out_data = current->data;
 
