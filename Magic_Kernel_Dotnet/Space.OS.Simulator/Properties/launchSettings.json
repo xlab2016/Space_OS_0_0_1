@@ -1,0 +1,7 @@
+{
+  "profiles": {
+    "Space.OS.Simulator": {
+      "commandName": "Project"
+    }
+  }
+}

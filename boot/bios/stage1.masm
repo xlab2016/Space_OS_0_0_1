@@ -1,0 +1,45 @@
+/*
+ * SPACE-OS BIOS Bootloader - Stage 1 (Magic ASM)
+ * Same as stage1.S but uses magic-asm: print "..." instead of manual print_string
+ */
+
+.code16
+.section .text
+.global _start
+
+_start:
+    cli
+    xor     %ax, %ax
+    mov     %ax, %ds
+    mov     %ax, %es
+    mov     %ax, %ss
+    mov     $0x7C00, %sp
+    sti
+
+    print "SPACE-OS Stage 1\r\n"
+
+    mov     $0x02, %ah
+    mov     $16, %al
+    mov     $0x0000, %ch
+    mov     $0x02, %cl
+    mov     $0x00, %dh
+    mov     $0x7E00, %bx
+    int     $0x13
+
+    jc      disk_error
+
+    print "Loading Stage 2...\r\n"
+
+    jmp     0x7E00
+
+disk_error:
+    print "Disk read error!\r\n"
+    jmp     halt
+
+halt:
+    cli
+    hlt
+    jmp     halt
+
+.org 510
+.word 0xAA55

@@ -1,0 +1,180 @@
+name: Build and Release Vib-OS
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # Trigger on version tags like v0.5.0, v1.0.0, etc.
+  workflow_dispatch:  # Allow manual trigger
+    inputs:
+      version:
+        description: 'Release version (e.g., v0.5.0)'
+        required: true
+        default: 'v0.5.0'
+
+jobs:
+  build-arm64:
+    name: Build ARM64 Kernel
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            qemu-system-arm \
+            make \
+            lld \
+            llvm
+      
+      - name: Build ARM64 kernel
+        run: |
+          make clean
+          make kernel
+      
+      - name: Create ARM64 bootable image
+        run: |
+          make image || echo "Image creation skipped (optional)"
+      
+      - name: Package ARM64 artifacts
+        run: |
+          mkdir -p release/arm64
+          cp build/kernel/unixos.elf release/arm64/vibos-arm64.elf
+          if [ -f image/unixos.img ]; then
+            cp image/unixos.img release/arm64/vibos-arm64.img
+          fi
+          
+          # Create checksums
+          cd release/arm64
+          sha256sum * > SHA256SUMS
+          cd ../..
+          
+          # Create tarball
+          tar -czf vibos-arm64.tar.gz -C release/arm64 .
+      
+      - name: Upload ARM64 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibos-arm64
+          path: vibos-arm64.tar.gz
+          retention-days: 90
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-arm64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Download ARM64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: vibos-arm64
+          path: ./artifacts
+      
+      - name: Extract version
+        id: get_version
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          cat > release_notes.md << 'EOF'
+          # Vib-OS ${{ steps.get_version.outputs.version }}
+          
+          A Unix-like operating system with ARM64 support and GUI.
+          
+          ## 🎯 Supported Architectures
+          
+          - ✅ **ARM64** - Raspberry Pi 4/5, ARM64 UEFI boards, Apple Silicon (via UTM)
+          
+          > **Note**: For a standalone x86_64 UEFI build, see the [`vib-os-x86_64/`](https://github.com/viralcode/vib-OS/tree/main/vib-os-x86_64) folder.
+          
+          ## 📦 Downloads
+          
+          ### ARM64
+          - `vibos-arm64.tar.gz` - ARM64 kernel and bootable image
+            - `vibos-arm64.elf` - Kernel binary
+            - `vibos-arm64.img` - Bootable SD card image (if available)
+            - `SHA256SUMS` - Checksums for verification
+          
+          ## 🚀 Quick Start
+          
+          ### For ARM64 (Raspberry Pi 4/5)
+          ```bash
+          # Extract the archive
+          tar -xzf vibos-arm64.tar.gz
+          
+          # Write to SD card (replace /dev/sdX with your SD card device)
+          sudo dd if=vibos-arm64.img of=/dev/sdX bs=4M status=progress
+          sync
+          
+          # Insert SD card and boot
+          ```
+          
+          ### For Apple Silicon (UTM)
+          1. Download UTM from https://mac.getutm.app/
+          2. Create new ARM64 virtual machine
+          3. Use `vibos-arm64.img` as boot disk
+          4. Configure 2GB+ RAM and boot
+          
+          ## ✨ Features
+          
+          - Full graphical desktop environment
+          - Process scheduling and multi-threading
+          - Virtual File System (VFS) with RAMFS, EXT4 support
+          - TCP/IP networking stack
+          - Python and Nano scripting languages
+          - Doom, Snake, and other apps
+          - Media support (JPEG, MP3)
+          
+          ## 📚 Documentation
+          
+          See the repository for detailed documentation:
+          - `README.md` - Full feature overview
+          - `BUILD_GUIDE.md` - Build instructions
+          - `docs/` - Additional documentation
+          
+          ## 🔒 Verification
+          
+          Verify your downloads using SHA256:
+          ```bash
+          sha256sum -c SHA256SUMS
+          ```
+          
+          ## ⚠️ Disclaimer
+          
+          This is experimental software. Use at your own risk. Always backup your data before installing on real hardware.
+          
+          ## 📝 Changelog
+          
+          See [CHANGELOG.md](CHANGELOG.md) for detailed changes in this release.
+          EOF
+          
+          echo "notes_file=release_notes.md" >> $GITHUB_OUTPUT
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.get_version.outputs.version }}
+          name: Vib-OS ${{ steps.get_version.outputs.version }}
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+          files: |
+            artifacts/vibos-arm64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

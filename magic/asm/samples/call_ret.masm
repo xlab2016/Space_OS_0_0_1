@@ -1,0 +1,52 @@
+/*
+ * Magic ASM sample: call/ret — отладка call и ret
+ * Подпрограммы после _start (forward reference).
+ * Дамп: xxd call_ret.bin   или  hexdump -C call_ret.bin
+ */
+
+.code16
+.section .text
+.global _start
+
+_start:
+    cli
+    xor     %ax, %ax
+    mov     %ax, %ds
+    mov     %ax, %es
+    mov     %ax, %ss
+    mov     $0x7C00, %sp
+    sti
+
+    call    putchar_A
+    call    putchar_B
+    call    putchar_C
+    print "/r/nSpace OS/r/n"
+
+halt:
+    cli
+    hlt
+    jmp     halt
+
+putchar_A:
+    mov     $0x0E, %ah
+    mov     $0, %bx
+    mov     $0x41, %al
+    int     $0x10
+    ret
+
+putchar_B:
+    mov     $0x0E, %ah
+    mov     $0, %bx
+    mov     $0x42, %al
+    int     $0x10
+    ret
+
+putchar_C:
+    mov     $0x0E, %ah
+    mov     $0, %bx
+    mov     $0x43, %al
+    int     $0x10
+    ret
+
+.org 510
+.word 0xAA55
