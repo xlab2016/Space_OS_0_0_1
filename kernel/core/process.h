@@ -24,12 +24,19 @@ typedef enum {
     PROC_STATE_ZOMBIE        // Exited, waiting to be cleaned up
 } proc_state_t;
 
+// Process entry type: determines calling convention used for entry point
+typedef enum {
+    PROC_TYPE_KAPI = 0,  // kapi ABI: entry(kapi_t *kapi, int argc, char **argv)
+    PROC_TYPE_ELF        // Standard ELF ABI: main(int argc, char **argv)
+} proc_type_t;
+
 // CPU context is now defined in arch/arch.h for multi-architecture support
 
 typedef struct process {
     int pid;
     char name[PROCESS_NAME_MAX];
     proc_state_t state;
+    proc_type_t proc_type;    // Entry calling convention (kapi or standard ELF)
 
     // Memory
     uint64_t load_base;       // Where program code is loaded
@@ -49,15 +56,24 @@ typedef struct process {
 // Initialize process subsystem
 void process_init(void);
 
-// Create a new process from ELF path (does NOT start it yet)
+// Create a new kapi process (does NOT start it yet)
+// Entry is called as: entry(kapi_t *kapi, int argc, char **argv)
 int process_create(const char *path, int argc, char **argv);
+
+// Create a new standard ELF process (does NOT start it yet)
+// Entry is called as: main(int argc, char **argv)
+int process_create_elf(const char *path, int argc, char **argv);
 
 // Start a created process (makes it ready to run)
 int process_start(int pid);
 
-// Execute and wait (old behavior - run to completion)
+// Execute and wait for a kapi binary (entry: kapi, argc, argv)
 int process_exec(const char *path);
 int process_exec_args(const char *path, int argc, char **argv);
+
+// Execute and wait for a standard ELF binary (entry: argc, argv)
+int process_exec_elf(const char *path);
+int process_exec_args_elf(const char *path, int argc, char **argv);
 
 // Exit current process
 void process_exit(int status);
