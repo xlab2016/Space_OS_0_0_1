@@ -40,6 +40,7 @@ typedef struct process {
     // Execution
     uint64_t entry;           // Entry point
     cpu_context_t context;    // Saved registers for context switch
+    int abi_type;             // ELF_ABI_KAPI or ELF_ABI_STANDARD
 
     // Exit
     int exit_status;
@@ -55,9 +56,18 @@ int process_create(const char *path, int argc, char **argv);
 // Start a created process (makes it ready to run)
 int process_start(int pid);
 
-// Execute and wait (old behavior - run to completion)
+// Execute and wait (old behavior - run to completion, kapi-ABI only)
 int process_exec(const char *path);
 int process_exec_args(const char *path, int argc, char **argv);
+
+// Launch a standard ELF (non-blocking, uses preemptive scheduler)
+// Returns pid on success, -1 on failure.  The process runs concurrently;
+// the caller must NOT busy-wait for it (that would freeze the GUI).
+int process_launch_elf(const char *path, int argc, char **argv);
+
+// Check if a process is still running (READY or RUNNING state).
+// Returns 1 if running, 0 if finished/not found.
+int process_is_running(int pid);
 
 // Exit current process
 void process_exit(int status);

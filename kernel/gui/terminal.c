@@ -17,6 +17,10 @@
 
 /* Forward declare process execution for generic ELF binaries */
 extern int process_exec_args(const char *path, int argc, char **argv);
+/* Non-blocking ELF launch (uses preemptive scheduler, no GUI freeze) */
+extern int process_launch_elf(const char *path, int argc, char **argv);
+/* Check process state (returns non-zero if process is still running) */
+extern int process_is_running(int pid);
 
 /* Forward declare window type */
 struct window;
@@ -105,6 +109,9 @@ struct terminal {
   /* Current Working Directory */
   char cwd[256];
 
+  /* Foreground ELF process PID (-1 if none running) */
+  int elf_pid;
+
 /* Command history */
 #define TERM_HISTORY_SIZE 32
 #define TERM_HISTORY_LEN 128
@@ -124,6 +131,20 @@ void term_putc(struct terminal *term, char c);
 /* Terminal that is currently running an ELF process (for I/O redirect)  */
 static struct terminal *elf_io_terminal = NULL;
 
+/* Small ring buffer for key presses forwarded to a running ELF's stdin */
+#define ELF_STDIN_BUF_SIZE 64
+static char elf_stdin_buf[ELF_STDIN_BUF_SIZE];
+static volatile int elf_stdin_r = 0; /* read index */
+static volatile int elf_stdin_w = 0; /* write index */
+
+static void elf_stdin_push(char c) {
+  int next = (elf_stdin_w + 1) % ELF_STDIN_BUF_SIZE;
+  if (next != elf_stdin_r) { /* don't overflow */
+    elf_stdin_buf[elf_stdin_w] = c;
+    elf_stdin_w = next;
+  }
+}
+
 /* Called by sys_write when an ELF writes to stdout/stderr */
 static void gui_term_stdout_hook(const char *buf, size_t len) {
   if (!elf_io_terminal)
@@ -133,18 +154,21 @@ static void gui_term_stdout_hook(const char *buf, size_t len) {
 }
 
 /* Called by sys_read when an ELF reads from stdin.
- * Returns -1 when no input is available (ELF will yield and retry).
- * Note: interactive stdin requires preemptive scheduling so that the GUI
- * event loop can process key events while the ELF is blocked on read.
- * For non-interactive tools (spc, spe) this hook is set but not exercised. */
+ * Returns the next queued key or -1 if none.
+ * The ELF will yield and retry, keeping the GUI responsive. */
 static int gui_term_stdin_hook(void) {
-  /* No buffered input available */
-  return -1;
+  if (elf_stdin_r == elf_stdin_w)
+    return -1; /* nothing buffered */
+  char c = elf_stdin_buf[elf_stdin_r];
+  elf_stdin_r = (elf_stdin_r + 1) % ELF_STDIN_BUF_SIZE;
+  return (unsigned char)c;
 }
 
 /* Install I/O hooks for an ELF process running in this terminal */
 static void term_elf_io_start(struct terminal *term) {
   elf_io_terminal = term;
+  /* Reset stdin buffer so old key presses don't bleed in */
+  elf_stdin_r = elf_stdin_w = 0;
   syscall_set_gui_stdout(gui_term_stdout_hook);
   syscall_set_gui_stdin(gui_term_stdin_hook);
 }
@@ -1370,13 +1394,21 @@ void term_execute_command(struct terminal *term, const char *cmd) {
           elf_argv[1] = 0;
         }
 
+        /* Install I/O hooks so the process output goes to the terminal.
+         * The hooks stay active until term_tick() detects the process
+         * has finished and calls term_elf_io_stop(). */
         term_elf_io_start(term);
-        int rc = process_exec_args(resolved_path, elf_argc, elf_argv);
-        term_elf_io_stop();
-        if (rc < 0) {
+        int pid = process_launch_elf(resolved_path, elf_argc, elf_argv);
+        if (pid < 0) {
+          term_elf_io_stop();
           term_puts(term, "\033[31mExec failed:\033[0m ");
           term_puts(term, resolved_path);
           term_puts(term, "\n");
+        } else {
+          /* Track the foreground process; prompt will be shown by term_tick */
+          term->elf_pid = pid;
+          /* Return without printing the prompt — term_tick handles it */
+          return;
         }
       } else {
         term_puts(term, "\033[31mCommand not found:\033[0m ");
@@ -1394,6 +1426,20 @@ void term_execute_command(struct terminal *term, const char *cmd) {
 void term_handle_key(struct terminal *term, int key) {
   if (!term)
     return;
+
+  /* If a foreground ELF process is running, forward key presses to its
+   * stdin ring buffer instead of processing them as shell commands. */
+  if (term->elf_pid > 0) {
+    if (key >= 1 && key < 256) {
+      char c = (char)key;
+      if (c == '\r')
+        c = '\n'; /* normalize */
+      elf_stdin_push(c);
+      /* Echo the character to the terminal for visual feedback */
+      term_putc(term, c);
+    }
+    return;
+  }
 
   if (key == '\n' || key == '\r') {
     /* Process command */
@@ -1415,8 +1461,12 @@ void term_handle_key(struct terminal *term, int key) {
       term_execute_command(term, term->input_buf);
     }
 
-    /* Show new prompt */
-    term_puts(term, "\033[32mspace-os\033[0m:\033[34m~\033[0m$ ");
+    /* Show new prompt only if no foreground ELF is running.
+     * If an ELF was launched, term->elf_pid > 0 and term_tick() will
+     * show the prompt once the process exits. */
+    if (term->elf_pid <= 0) {
+      term_puts(term, "\033[32mspace-os\033[0m:\033[34m~\033[0m$ ");
+    }
 
     term->input_len = 0;
     term->input_pos = 0;
@@ -1475,6 +1525,10 @@ struct terminal *term_create(int x, int y, int cols, int rows) {
   term->input_pos = 0;
   term->content_x = x;
   term->content_y = y;
+  term->elf_pid = -1; /* No foreground ELF running */
+  term->shell_pid = -1;
+  term->pty_fd = -1;
+  term->history_count = 0;
 
   /* Init CWD */
   term->cwd[0] = '/';
@@ -1532,4 +1586,32 @@ void term_set_content_pos(struct terminal *t, int x, int y) {
     return;
   t->content_x = x;
   t->content_y = y;
+}
+
+/* ===================================================================== */
+/* Periodic tick — called from the GUI render loop each frame            */
+/* ===================================================================== */
+
+/*
+ * term_tick - Check if a foreground ELF process has finished.
+ *
+ * Should be called periodically from the GUI event loop.  When the
+ * foreground ELF process exits the function:
+ *   1. Tears down the I/O redirect hooks.
+ *   2. Prints the new shell prompt.
+ *   3. Resets term->elf_pid to -1.
+ */
+void term_tick(struct terminal *term) {
+  if (!term || term->elf_pid <= 0)
+    return;
+
+  /* Check if the process is still alive */
+  if (!process_is_running(term->elf_pid)) {
+    /* Process has exited */
+    term_elf_io_stop();
+    term->elf_pid = -1;
+
+    /* Show the prompt again */
+    term_puts(term, "\n\033[32mspace-os\033[0m:\033[34m~\033[0m$ ");
+  }
 }

@@ -139,6 +139,45 @@ static void elf_process_relocations(uint64_t load_base,
   }
 }
 
+/* ELF OSABI values */
+#define ELFOSABI_NONE  0   /* No extensions or unspecified */
+#define ELFOSABI_LINUX 3   /* Linux */
+#define EI_OSABI       7   /* OS/ABI identification */
+
+/*
+ * elf_detect_abi - Detect ELF ABI type
+ *
+ * Heuristic:
+ *   1. e_ident[EI_OSABI] == ELFOSABI_LINUX (3)  → standard (Linux ABI)
+ *   2. PT_INTERP segment present                 → standard (dynamic Linux ELF)
+ *   3. Otherwise                                 → kapi-ABI (bare-metal)
+ *
+ * Returns ELF_ABI_STANDARD or ELF_ABI_KAPI.
+ */
+int elf_detect_abi(const void *data, size_t size) {
+  if (!data || size < sizeof(Elf64_Ehdr))
+    return ELF_ABI_KAPI;
+
+  const Elf64_Ehdr *ehdr = (const Elf64_Ehdr *)data;
+
+  /* Check OS/ABI byte */
+  if (ehdr->e_ident[EI_OSABI] == ELFOSABI_LINUX)
+    return ELF_ABI_STANDARD;
+
+  /* Check for PT_INTERP (dynamic linker) */
+  const uint8_t *base = (const uint8_t *)data;
+  for (int i = 0; i < ehdr->e_phnum; i++) {
+    if (ehdr->e_phoff + (uint64_t)(i + 1) * ehdr->e_phentsize > size)
+      break;
+    const Elf64_Phdr *phdr =
+        (const Elf64_Phdr *)(base + ehdr->e_phoff + i * ehdr->e_phentsize);
+    if (phdr->p_type == PT_INTERP)
+      return ELF_ABI_STANDARD;
+  }
+
+  return ELF_ABI_KAPI;
+}
+
 /* Load ELF at a specific base address */
 int elf_load_at(const void *data, size_t size, uint64_t load_base,
                 elf_load_info_t *info) {
