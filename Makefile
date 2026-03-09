@@ -160,9 +160,16 @@ kernel: $(BUILD_DIR) $(ALL_KERNEL_OBJECTS) $(KERNEL_BINARY)
 $(BUILD_DIR)/kernel/%.o: $(KERNEL_DIR)/%.c
 	@mkdir -p $(dir $@)
 	@echo "[CC] $<"
-	@# Media files need FP support, compile without -mgeneral-regs-only
-	@if echo "$<" | grep -q "/media/"; then \
-		$(CC) $(CFLAGS_COMMON) $(CROSS_TARGET) -mcpu=cortex-a72 -I$(KERNEL_DIR)/include -fno-builtin -nostdlib -nostdinc -c $< -o $@; \
+	@# Media and magic runtime files need FP support (doubles), compile without -mgeneral-regs-only
+	@# The /magic/ subdir also gets -I for its own proxy stdint.h/stddef.h stubs
+	@if echo "$<" | grep -qE "/media/|/magic/"; then \
+		$(CC) $(CFLAGS_COMMON) $(CROSS_TARGET) -mcpu=cortex-a72 \
+		    -I$(KERNEL_DIR)/magic \
+		    -I$(KERNEL_DIR)/include -I$(KERNEL_DIR) \
+		    -fno-builtin -nostdlib -nostdinc \
+		    -DARCH_ARM64 \
+		    -Wno-unused-function -Wno-unused-variable \
+		    -c $< -o $@; \
 	else \
 		$(CC) $(CFLAGS_KERNEL) -c $< -o $@; \
 	fi

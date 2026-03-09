@@ -258,13 +258,28 @@ int early_printk(const char *fmt, ...)
 {
     va_list args;
     int ret;
-    
+
     va_start(args, fmt);
     ret = kvsnprintf(printk_buffer, PRINTK_BUFFER_SIZE, fmt, args);
     va_end(args);
-    
+
     /* Direct UART output, no buffering */
     uart_puts(printk_buffer);
-    
+
     return ret;
+}
+
+/* Public vsnprintf wrapper for use by kernel subsystems (e.g. magic runtime) */
+int ksnprintf(char *buf, size_t size, const char *fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    int n = kvsnprintf(buf, size, fmt, args);
+    va_end(args);
+    return n;
+}
+
+int kvsnprintf_pub(char *buf, size_t size, const char *fmt, va_list args)
+{
+    return kvsnprintf(buf, size, fmt, args);
 }
