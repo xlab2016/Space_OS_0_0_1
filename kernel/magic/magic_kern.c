@@ -104,6 +104,25 @@ static int kern_streq(const char *a, const char *b) {
  * All text output goes through magic_output_hook (GUI terminal) or printk.
  */
 int kern_spc_run(int argc, char **argv) {
+    /* Debug: show raw argv contents and lengths */
+    magic_printf("\033[35m[spc-debug] argc=%d\033[0m\n", argc);
+    for (int i = 0; i < argc; i++) {
+        if (!argv[i]) {
+            magic_printf("[spc-debug] argv[%d]=<NULL>\n", i);
+            continue;
+        }
+        int len = 0;
+        while (argv[i][len])
+            len++;
+        magic_printf("[spc-debug] argv[%d]=\"%s\" (len=%d)\n", i, argv[i], len);
+        magic_printf("[spc-debug] argv[%d] bytes: ", i);
+        for (int j = 0; j < len; j++) {
+            magic_printf("%c", (j == 0 ? '[' : ' '));
+            magic_printf("%c", argv[i][j]);
+        }
+        magic_printf("]\n");
+    }
+
     if (argc < 2) {
         magic_printf("\033[33mUsage:\033[0m spc <file.agi> [--agiasm]\n");
         magic_printf("  Compiles Magic language source to .agic bytecode\n");

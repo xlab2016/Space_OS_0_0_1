@@ -451,10 +451,14 @@ static void build_path(struct terminal *term, const char *input, char *out,
                        int out_size) {
   if (!term || !input || !out || out_size <= 0)
     return;
+
+  /* Skip leading spaces in the raw argument */
   while (*input == ' ')
     input++;
+
+  /* Take only the first token (stop at space/newline) */
   int len = 0;
-  while (input[len] && input[len] != '\n')
+  while (input[len] && input[len] != '\n' && input[len] != ' ')
     len++;
 
   if (len == 0) {
@@ -462,32 +466,52 @@ static void build_path(struct terminal *term, const char *input, char *out,
     return;
   }
 
+  /* Absolute path: just copy as-is (bounded) */
   if (input[0] == '/') {
-    int i = 0;
-    while (i < len && i < out_size - 1) {
+    int n = (len < out_size - 1) ? len : (out_size - 1);
+    for (int i = 0; i < n; i++)
       out[i] = input[i];
-      i++;
-    }
-    out[i] = '\0';
+    out[n] = '\0';
     return;
   }
 
+  /* Start with CWD (or "/" if empty/invalid) */
   int idx = 0;
-  int cwd_len = 0;
-  while (term->cwd[cwd_len])
-    cwd_len++;
-  for (int i = 0; i < cwd_len && idx < out_size - 1; i++) {
-    out[idx++] = term->cwd[i];
+  const char *cwd = (term->cwd[0] ? term->cwd : "/");
+  while (cwd[idx] && idx < out_size - 1) {
+    out[idx] = cwd[idx];
+    idx++;
   }
+
+  /* Ensure exactly one slash separator between CWD and relative path */
   if (idx == 0) {
     out[idx++] = '/';
   } else if (out[idx - 1] != '/' && idx < out_size - 1) {
     out[idx++] = '/';
   }
-  for (int i = 0; i < len && idx < out_size - 1; i++) {
-    out[idx++] = input[i];
-  }
+
+  /* Append the relative token */
+  int avail = out_size - 1 - idx;
+  if (avail < 0)
+    avail = 0;
+  int copy_len = (len < avail) ? len : avail;
+  for (int i = 0; i < copy_len; i++)
+    out[idx + i] = input[i];
+  idx += copy_len;
   out[idx] = '\0';
+
+  /* Normalize leading '//' to single '/' to avoid weird CWD like "//h" */
+  int start = 0;
+  while (out[start] == '/' && out[start + 1] == '/')
+    start++;
+  if (start > 0) {
+    int j = 0;
+    while (out[start + j]) {
+      out[j] = out[start + j];
+      j++;
+    }
+    out[j] = '\0';
+  }
 }
 
 #include "fs/vfs.h"
@@ -587,12 +611,28 @@ void term_execute_command(struct terminal *term, const char *cmd) {
       while (*p && a2 < 254) spc_arg2[a2++] = *p++;
       spc_arg2[a2] = '\0';
 
+      /* Debug: show raw arg and cwd before path resolution */
+      term_puts(term, "\033[35m[spc-term-debug] cwd=\"");
+      term_puts(term, term->cwd);
+      term_puts(term, "\" raw_arg1=\"");
+      term_puts(term, spc_arg1);
+      term_puts(term, "\"\033[0m\n");
+
       /* Resolve first arg relative to CWD */
       char spc_path1[256];
       build_path(term, spc_arg1, spc_path1, sizeof(spc_path1));
+
+       /* Debug: show resolved path */
+      term_puts(term, "\033[35m[spc-term-debug] resolved_arg1=\"");
+      term_puts(term, spc_path1);
+      term_puts(term, "\"\033[0m\n");
+
       if (spc_path1[0]) {
         int i = 0;
-        while (spc_path1[i]) spc_arg1[i] = spc_path1[i++];
+        while (spc_path1[i]) {
+          spc_arg1[i] = spc_path1[i];
+          i++;
+        }
         spc_arg1[i] = '\0';
       }
 
