@@ -53,6 +53,8 @@ void term_render(struct terminal *term);
 void term_handle_key(struct terminal *term, int key);
 struct terminal *term_get_active(void);
 void term_set_active(struct terminal *term);
+/* Poll foreground ELF process state; show prompt when process exits */
+void term_tick(struct terminal *term);
 
 /* ===================================================================== */
 /* Application Framework */
