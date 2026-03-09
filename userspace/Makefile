@@ -19,9 +19,9 @@ LIBC_DIR = ../build/libc
 CRT0 = $(LIBC_DIR)/crt0.o
 LIBC = $(LIBC_DIR)/libc.a
 
-.PHONY: all clean init shell coreutils dirs
+.PHONY: all clean init shell coreutils magic dirs
 
-all: dirs init shell login coreutils
+all: dirs init shell login coreutils magic
 
 # Ensure build directories exist
 dirs:
@@ -51,6 +51,19 @@ login: dirs
 	@mkdir -p $(BUILD_DIR)/bin
 	@$(CC) $(CFLAGS) -c login/login.c -o $(BUILD_DIR)/login.o
 	@$(LD) $(LDFLAGS) -o $(BUILD_DIR)/bin/login $(CRT0) $(BUILD_DIR)/login.o $(LIBC)
+
+# Magic language tools (spc and spe)
+magic: dirs
+	@echo "[BUILD] magic tools (spc, spe)"
+	@$(MAKE) -C magic \
+	    CC="$(CC)" \
+	    CFLAGS="$(CFLAGS)" \
+	    LD="$(LD)" \
+	    LDFLAGS="$(LDFLAGS)" \
+	    BUILD_DIR="$(BUILD_DIR)" \
+	    LIBC_DIR="$(LIBC_DIR)" \
+	    CRT0="$(CRT0)" \
+	    LIBC="$(LIBC)"
 
 clean:
 	rm -rf $(BUILD_DIR)

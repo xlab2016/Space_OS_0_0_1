@@ -1,0 +1,21 @@
+@ AGI 1.0
+program Conditional
+
+entrypoint
+{
+  asm {
+    push 42
+    pop [0]
+    cmp [0], 42
+    je answer_found
+    push string: "Not the answer"
+    push 1
+    call print
+    jmp done
+    label answer_found
+    push string: "The answer to everything is 42!"
+    push 1
+    call print
+    label done
+  }
+}
