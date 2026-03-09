@@ -85,6 +85,7 @@ typedef struct {
 
 /* Machine types */
 #define EM_AARCH64 183
+#define EM_X86_64  62
 
 /* ELF types */
 #define ET_EXEC 2
@@ -102,6 +103,9 @@ int elf_validate(const void *data, size_t size);
 
 /* Get entry point from ELF */
 uint64_t elf_entry(const void *data);
+
+/* Get machine type from ELF header (e.g. EM_AARCH64, EM_X86_64) */
+uint16_t elf_machine(const void *data);
 
 /* Load ELF at a specific base address (for PIE binaries) */
 int elf_load_at(const void *data, size_t size, uint64_t base, elf_load_info_t *info);

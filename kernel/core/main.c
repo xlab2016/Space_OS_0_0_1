@@ -459,11 +459,11 @@ static void start_init_process(void) {
   /* Create and start init process asynchronously */
   printk(KERN_INFO "Spawning /sbin/init...\n");
 
-  extern int process_create(const char *path, int argc, char **argv);
+  extern int process_create_elf(const char *path, int argc, char **argv);
   extern int process_start(int pid);
 
   char *argv[] = {"/sbin/init", NULL};
-  int pid = process_create("/sbin/init", 1, argv);
+  int pid = process_create_elf("/sbin/init", 1, argv);
   if (pid > 0) {
     process_start(pid);
     printk(KERN_INFO "Started init process (pid %d)\n", pid);

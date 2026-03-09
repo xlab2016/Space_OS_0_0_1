@@ -45,8 +45,8 @@ int elf_validate(const void *data, size_t size) {
     return -4;
   }
 
-  /* Check machine type (AArch64) */
-  if (ehdr->e_machine != EM_AARCH64) {
+  /* Check machine type (AArch64 or x86_64) */
+  if (ehdr->e_machine != EM_AARCH64 && ehdr->e_machine != EM_X86_64) {
     return -5;
   }
 
@@ -61,6 +61,11 @@ int elf_validate(const void *data, size_t size) {
 uint64_t elf_entry(const void *data) {
   const Elf64_Ehdr *ehdr = (const Elf64_Ehdr *)data;
   return ehdr->e_entry;
+}
+
+uint16_t elf_machine(const void *data) {
+  const Elf64_Ehdr *ehdr = (const Elf64_Ehdr *)data;
+  return ehdr->e_machine;
 }
 
 /* Calculate total memory size needed for all LOAD segments */
