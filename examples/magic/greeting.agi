@@ -1,0 +1,22 @@
+@ AGI 1.0
+program Greeting
+
+procedure say_hello
+{
+  asm {
+    push string: "Hello, Space OS!"
+    push 1
+    call print
+    push string: "Powered by Magic Language"
+    push 1
+    call print
+    ret
+  }
+}
+
+entrypoint
+{
+  asm {
+    call say_hello
+  }
+}

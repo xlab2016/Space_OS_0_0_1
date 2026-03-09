@@ -1,0 +1,11 @@
+@ AGI 1.0
+program HelloWorld
+
+entrypoint
+{
+  asm {
+    push string: "Hello from Space OS Magic Language!"
+    push 1
+    call print
+  }
+}
