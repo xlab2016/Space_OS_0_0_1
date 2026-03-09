@@ -12,6 +12,32 @@
 #include "sched/sched.h"
 
 /* ===================================================================== */
+/* GUI Terminal I/O Redirect Hooks                                        */
+/* ===================================================================== */
+
+/* When running an ELF from the GUI terminal, stdout/stderr can be          */
+/* redirected to the terminal buffer by setting these hooks.                 */
+/* Set to NULL for normal UART output.                                       */
+static void (*gui_stdout_hook)(const char *buf, size_t len) = NULL;
+static int  (*gui_stdin_hook)(void) = NULL;
+
+/**
+ * syscall_set_gui_stdout - Redirect ELF stdout/stderr to GUI terminal
+ * @hook: Function to call with each chunk of output, or NULL to disable
+ */
+void syscall_set_gui_stdout(void (*hook)(const char *buf, size_t len)) {
+  gui_stdout_hook = hook;
+}
+
+/**
+ * syscall_set_gui_stdin - Redirect ELF stdin reads to GUI terminal input
+ * @hook: Function returning next character (or -1 if none), or NULL to disable
+ */
+void syscall_set_gui_stdin(int (*hook)(void)) {
+  gui_stdin_hook = hook;
+}
+
+/* ===================================================================== */
 /* File Descriptor Table */
 /* ===================================================================== */
 
@@ -136,14 +162,19 @@ static long sys_read(uint64_t fd, uint64_t buf, uint64_t count, uint64_t a3,
 
   /* Handle stdin specially */
   if (fd == 0) {
-    kapi_t *api = kapi_get();
     char *p = (char *)buf;
     size_t n = 0;
 
     /* Block until we get at least one character */
     while (n < count) {
-      /* Poll for input */
-      int c = api->getc();
+      int c;
+      if (gui_stdin_hook) {
+        /* Read from GUI terminal input */
+        c = gui_stdin_hook();
+      } else {
+        kapi_t *api = kapi_get();
+        c = api->getc();
+      }
 
       if (c >= 0) {
         /* Got a character */
@@ -187,11 +218,16 @@ static long sys_write(uint64_t fd, uint64_t buf, uint64_t count, uint64_t a3,
 
   init_fd_table();
 
-  /* Special case: stdout/stderr (fd 1 and 2) go to console */
+  /* Special case: stdout/stderr (fd 1 and 2) go to console or GUI terminal */
   if (fd == 1 || fd == 2) {
     const char *str = (const char *)buf;
-    for (size_t i = 0; i < count; i++) {
-      uart_putc(str[i]);
+    if (gui_stdout_hook) {
+      /* Redirect to GUI terminal */
+      gui_stdout_hook(str, count);
+    } else {
+      for (size_t i = 0; i < count; i++) {
+        uart_putc(str[i]);
+      }
     }
     return count;
   }
