@@ -22,11 +22,13 @@ SYSROOT = ../build/sysroot
 
 # Source files
 C_SOURCES = src/syscall.c \
-            src/string.c \
-            src/stdlib.c \
-            src/stdio.c \
-            src/signal.c \
-            src/errno.c
+            src/string.c  \
+            src/stdlib.c  \
+            src/stdio.c   \
+            src/signal.c  \
+            src/errno.c   \
+            src/ctype.c   \
+            src/math.c
 
 ASM_SOURCES = crt/crt0.S
 

@@ -9,5 +9,9 @@ extern const unsigned char login_bin[];
 extern const unsigned int login_bin_len;
 extern const unsigned char shell_bin[];
 extern const unsigned int shell_bin_len;
+extern const unsigned char spc_bin[];
+extern const unsigned int spc_bin_len;
+extern const unsigned char spe_bin[];
+extern const unsigned int spe_bin_len;
 
 #endif

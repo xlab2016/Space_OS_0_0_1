@@ -497,6 +497,8 @@ void term_execute_command(struct terminal *term, const char *cmd) {
     term_puts(term, "  sound     - Test audio output\n");
     term_puts(term, "\033[33mLanguages:\033[0m\n");
     term_puts(term, "  run <f>   - Execute file (.py/.nano)\n");
+    term_puts(term, "  spc <agi> - Magic compiler (source -> .agic/.agiasm)\n");
+    term_puts(term, "  spe <f>   - Magic emulator (run .agi/.agic/.agiasm)\n");
     term_puts(term, "  languages - List supported languages\n");
     term_puts(term, "  man <cmd> - Manual pages (nanoc,python,cpp)\n");
     term_puts(term, "\033[33mSystem:\033[0m\n");
@@ -515,6 +517,19 @@ void term_execute_command(struct terminal *term, const char *cmd) {
     term_puts(term, "  netstat   - Show connections\n");
     term_puts(term, "  nslookup  - DNS lookup\n");
     term_puts(term, "  curl/wget - HTTP request\n");
+  } else if (str_starts_with(cmd, "spc")) {
+    /* Magic language compiler is a real userspace tool (/bin/spc)
+       exposed in the text shell. GUI terminal is kernel-side and
+       can't yet execute ELF binaries directly, so guide the user. */
+    term_puts(term, "spc: available in shell (/bin/sh)\n");
+    term_puts(term,
+              "  Tip: use the login/text console and run:\n"
+              "    spc <file.agi> [--agiasm]\n");
+  } else if (str_starts_with(cmd, "spe")) {
+    term_puts(term, "spe: available in shell (/bin/sh)\n");
+    term_puts(term,
+              "  Tip: use the login/text console and run:\n"
+              "    spe <program.agi|.agic|.agiasm>\n");
   } else if (str_starts_with(cmd, "ls")) {
     const char *path = term->cwd[0] ? term->cwd : "/";
     struct file *dir = vfs_open(path, O_RDONLY, 0);

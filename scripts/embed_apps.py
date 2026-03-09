@@ -36,6 +36,9 @@ def main():
         ("init_bin", os.path.join(build_dir, "userspace/sbin/init")),
         ("login_bin", os.path.join(build_dir, "userspace/bin/login")),
         ("shell_bin", os.path.join(build_dir, "userspace/bin/sh")),
+        # Magic language tools (optional – skipped if missing)
+        ("spc_bin", os.path.join(build_dir, "userspace/bin/spc")),
+        ("spe_bin", os.path.join(build_dir, "userspace/bin/spe")),
     ]
     
     c_path = os.path.join(kernel_dir, "apps/embedded_apps.c")

@@ -265,6 +265,10 @@ static void init_subsystems(void *dtb) {
   ramfs_create_file_bytes("/bin/login", 0755, login_bin, login_bin_len);
   ramfs_create_file_bytes("/bin/sh", 0755, shell_bin, shell_bin_len);
 
+  /* Magic language tools (compiler and emulator) */
+  ramfs_create_file_bytes("/bin/spc", 0755, spc_bin, spc_bin_len);
+  ramfs_create_file_bytes("/bin/spe", 0755, spe_bin, spe_bin_len);
+
   /* Create examples directory with language demo files */
   ramfs_create_dir("examples", 0755);
 

@@ -57,13 +57,8 @@ magic: dirs
 	@echo "[BUILD] magic tools (spc, spe)"
 	@$(MAKE) -C magic \
 	    CC="$(CC)" \
-	    CFLAGS="$(CFLAGS)" \
 	    LD="$(LD)" \
-	    LDFLAGS="$(LDFLAGS)" \
-	    BUILD_DIR="$(BUILD_DIR)" \
-	    LIBC_DIR="$(LIBC_DIR)" \
-	    CRT0="$(CRT0)" \
-	    LIBC="$(LIBC)"
+	    LDFLAGS="$(LDFLAGS)"
 
 clean:
 	rm -rf $(BUILD_DIR)

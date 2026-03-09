@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 /* Terminal colors (ANSI) */
 #define COLOR_RESET   "\033[0m"

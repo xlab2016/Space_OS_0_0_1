@@ -1,13 +1,19 @@
 # Magic Language Tools Makefile
 # Builds spc (Space Compiler) and spe (Space Emulator)
 
-CC     = clang
-CFLAGS = -target aarch64-unknown-none-elf \
-         -ffreestanding -fno-builtin \
-         -nostdlib -nostdinc \
-         -I../../libc/include \
-         -O2 -Wall -Wextra \
-         -Wno-unused-parameter
+CC           = clang
+
+# Default cross-compilation flags for standalone builds in this directory.
+MAGIC_CFLAGS = -target aarch64-unknown-none-elf \
+               -ffreestanding -fno-builtin \
+               -nostdlib -nostdinc \
+               -O2 -Wall -Wextra
+
+# If CFLAGS is provided by the parent make (e.g. userspace/Makefile), keep it,
+# otherwise fall back to our MAGIC_CFLAGS. Always ensure we can see libc/include.
+CFLAGS      ?= $(MAGIC_CFLAGS)
+CFLAGS      += -I../../libc/include \
+               -Wno-unused-parameter
 
 LD      = ld.lld
 LDFLAGS = -nostdlib -static

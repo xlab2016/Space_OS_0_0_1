@@ -1,4 +1,4 @@
-﻿# SPACE-OS Master Makefile
+# SPACE-OS Master Makefile
 # ARM64 OS for Apple Silicon and Raspberry Pi
 
 # ============================================================================
@@ -218,6 +218,13 @@ userspace: $(BUILD_DIR) libc
 		$(MAKE) -C $(USERSPACE_DIR) SYSROOT=$(SYSROOT); \
 	else \
 		echo "[USERSPACE] Source not yet configured"; \
+	fi
+	@# Embed init, login, shell, and Magic tools (spc/spe) into the kernel image
+	@if command -v python3 >/dev/null 2>&1; then \
+		echo "[EMBED] Embedding userspace apps into kernel..."; \
+		python3 ./scripts/embed_apps.py $(BUILD_DIR) $(KERNEL_DIR); \
+	else \
+		echo "[EMBED] python3 not found, skipping embedded apps update"; \
 	fi
 
 # ============================================================================
