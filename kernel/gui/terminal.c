@@ -7,7 +7,11 @@
 #include "media/media.h"
 #include "mm/kmalloc.h"
 #include "printk.h"
+#include "syscall/syscall.h"
 #include "types.h"
+
+/* Forward declare process execution */
+extern int process_exec_args(const char *path, int argc, char **argv);
 
 /* Forward declare window type */
 struct window;
@@ -104,6 +108,45 @@ struct terminal {
 };
 
 static struct terminal *active_terminal = NULL;
+
+/* ===================================================================== */
+/* ELF Process I/O Hooks                                                  */
+/* ===================================================================== */
+
+/* Terminal that is currently running an ELF process (for I/O redirect)  */
+static struct terminal *elf_io_terminal = NULL;
+
+/* Called by sys_write when an ELF writes to stdout/stderr */
+static void gui_term_stdout_hook(const char *buf, size_t len) {
+  if (!elf_io_terminal)
+    return;
+  for (size_t i = 0; i < len; i++)
+    term_putc(elf_io_terminal, buf[i]);
+}
+
+/* Called by sys_read when an ELF reads from stdin.
+ * Returns -1 when no input is available (ELF will yield and retry).
+ * Note: interactive stdin requires preemptive scheduling so that the GUI
+ * event loop can process key events while the ELF is blocked on read.
+ * For non-interactive tools (spc, spe) this hook is set but not exercised. */
+static int gui_term_stdin_hook(void) {
+  /* No buffered input available */
+  return -1;
+}
+
+/* Install I/O hooks for an ELF process running in this terminal */
+static void term_elf_io_start(struct terminal *term) {
+  elf_io_terminal = term;
+  syscall_set_gui_stdout(gui_term_stdout_hook);
+  syscall_set_gui_stdin(gui_term_stdin_hook);
+}
+
+/* Remove I/O hooks after ELF process finishes */
+static void term_elf_io_stop(void) {
+  syscall_set_gui_stdout(0);
+  syscall_set_gui_stdin(0);
+  elf_io_terminal = NULL;
+}
 
 /* ===================================================================== */
 /* Terminal Buffer Operations */
@@ -497,8 +540,8 @@ void term_execute_command(struct terminal *term, const char *cmd) {
     term_puts(term, "  sound     - Test audio output\n");
     term_puts(term, "\033[33mLanguages:\033[0m\n");
     term_puts(term, "  run <f>   - Execute file (.py/.nano)\n");
-    term_puts(term, "  spc <agi> - Magic compiler (source -> .agic/.agiasm)\n");
-    term_puts(term, "  spe <f>   - Magic emulator (run .agi/.agic/.agiasm)\n");
+    term_puts(term, "  spc <f>   - Magic compiler: source.agi -> .agic/.agiasm\n");
+    term_puts(term, "  spe <f>   - Magic emulator: run .agi/.agic/.agiasm\n");
     term_puts(term, "  languages - List supported languages\n");
     term_puts(term, "  man <cmd> - Manual pages (nanoc,python,cpp)\n");
     term_puts(term, "\033[33mSystem:\033[0m\n");
@@ -517,19 +560,103 @@ void term_execute_command(struct terminal *term, const char *cmd) {
     term_puts(term, "  netstat   - Show connections\n");
     term_puts(term, "  nslookup  - DNS lookup\n");
     term_puts(term, "  curl/wget - HTTP request\n");
-  } else if (str_starts_with(cmd, "spc")) {
-    /* Magic language compiler is a real userspace tool (/bin/spc)
-       exposed in the text shell. GUI terminal is kernel-side and
-       can't yet execute ELF binaries directly, so guide the user. */
-    term_puts(term, "spc: available in shell (/bin/sh)\n");
-    term_puts(term,
-              "  Tip: use the login/text console and run:\n"
-              "    spc <file.agi> [--agiasm]\n");
-  } else if (str_starts_with(cmd, "spe")) {
-    term_puts(term, "spe: available in shell (/bin/sh)\n");
-    term_puts(term,
-              "  Tip: use the login/text console and run:\n"
-              "    spe <program.agi|.agic|.agiasm>\n");
+  } else if (str_starts_with(cmd, "spc ") || (cmd[0]=='s' && cmd[1]=='p' && cmd[2]=='c' && cmd[3]=='\0')) {
+    /* Magic language compiler: /bin/spc <args> */
+    const char *args = cmd + 3;
+    while (*args == ' ') args++;
+
+    if (*args == '\0') {
+      term_puts(term, "\033[33mUsage:\033[0m spc <file.agi> [--agiasm]\n");
+      term_puts(term, "  Compiles Magic language source to .agic bytecode\n");
+    } else {
+      /* Build argv: { "/bin/spc", arg1, [arg2], NULL } */
+      static char spc_arg1[256];
+      static char spc_arg2[256];
+      const char *p = args;
+      int a1 = 0, a2 = 0;
+      while (*p && *p != ' ' && a1 < 254) spc_arg1[a1++] = *p++;
+      spc_arg1[a1] = '\0';
+      while (*p == ' ') p++;
+      while (*p && a2 < 254) spc_arg2[a2++] = *p++;
+      spc_arg2[a2] = '\0';
+
+      /* Resolve first arg relative to CWD */
+      char spc_path1[256];
+      build_path(term, spc_arg1, spc_path1, sizeof(spc_path1));
+      if (spc_path1[0]) {
+        int i = 0;
+        while (spc_path1[i]) spc_arg1[i] = spc_path1[i++];
+        spc_arg1[i] = '\0';
+      }
+
+      static const char *spc_argv3[4];
+      spc_argv3[0] = "/bin/spc";
+      spc_argv3[1] = spc_arg1;
+      if (a2 > 0) {
+        spc_argv3[2] = spc_arg2;
+        spc_argv3[3] = 0;
+      } else {
+        spc_argv3[2] = 0;
+      }
+      int spc_argc = (a2 > 0) ? 3 : 2;
+
+      term_puts(term, "\033[36m[spc]\033[0m Running Magic compiler...\n");
+      term_elf_io_start(term);
+      int rc = process_exec_args("/bin/spc", spc_argc, (char **)spc_argv3);
+      term_elf_io_stop();
+      if (rc < 0) {
+        term_puts(term, "\033[31mspc:\033[0m /bin/spc not found or failed\n");
+        term_puts(term, "  (Ensure the OS was built with Magic tools)\n");
+      }
+    }
+  } else if (str_starts_with(cmd, "spe ") || (cmd[0]=='s' && cmd[1]=='p' && cmd[2]=='e' && cmd[3]=='\0')) {
+    /* Magic language emulator: /bin/spe <args> */
+    const char *args = cmd + 3;
+    while (*args == ' ') args++;
+
+    if (*args == '\0') {
+      term_puts(term, "\033[33mUsage:\033[0m spe <file> [--verbose]\n");
+      term_puts(term, "  Executes Magic language programs (.agi, .agic, .agiasm)\n");
+    } else {
+      static char spe_arg1[256];
+      static char spe_arg2[256];
+      const char *p = args;
+      int a1 = 0, a2 = 0;
+      while (*p && *p != ' ' && a1 < 254) spe_arg1[a1++] = *p++;
+      spe_arg1[a1] = '\0';
+      while (*p == ' ') p++;
+      while (*p && a2 < 254) spe_arg2[a2++] = *p++;
+      spe_arg2[a2] = '\0';
+
+      /* Resolve first arg relative to CWD */
+      char spe_path1[256];
+      build_path(term, spe_arg1, spe_path1, sizeof(spe_path1));
+      if (spe_path1[0]) {
+        int i = 0;
+        while (spe_path1[i]) spe_arg1[i] = spe_path1[i++];
+        spe_arg1[i] = '\0';
+      }
+
+      static const char *spe_argv3[4];
+      spe_argv3[0] = "/bin/spe";
+      spe_argv3[1] = spe_arg1;
+      if (a2 > 0) {
+        spe_argv3[2] = spe_arg2;
+        spe_argv3[3] = 0;
+      } else {
+        spe_argv3[2] = 0;
+      }
+      int spe_argc = (a2 > 0) ? 3 : 2;
+
+      term_puts(term, "\033[36m[spe]\033[0m Running Magic emulator...\n");
+      term_elf_io_start(term);
+      int rc = process_exec_args("/bin/spe", spe_argc, (char **)spe_argv3);
+      term_elf_io_stop();
+      if (rc < 0) {
+        term_puts(term, "\033[31mspe:\033[0m /bin/spe not found or failed\n");
+        term_puts(term, "  (Ensure the OS was built with Magic tools)\n");
+      }
+    }
   } else if (str_starts_with(cmd, "ls")) {
     const char *path = term->cwd[0] ? term->cwd : "/";
     struct file *dir = vfs_open(path, O_RDONLY, 0);
@@ -1150,9 +1277,86 @@ void term_execute_command(struct terminal *term, const char *cmd) {
     term_puts(term,
               "<body><h1>Hello from SPACE-OS Network!</h1></body></html>\n");
   } else {
-    term_puts(term, "\033[31mCommand not found:\033[0m ");
-    term_puts(term, cmd);
-    term_puts(term, "\nType 'help' for available commands.\n");
+    /* Try to execute as an ELF binary from /bin/ or as an absolute path */
+    /* Parse command: first token is the program name, rest are args */
+    char elf_path[256];
+    char elf_arg_buf[512];
+    int pi = 0, ai = 0;
+    const char *cp = cmd;
+
+    /* Copy program name */
+    while (*cp && *cp != ' ' && pi < 254) elf_path[pi++] = *cp++;
+    elf_path[pi] = '\0';
+
+    /* Skip spaces */
+    while (*cp == ' ') cp++;
+
+    /* Copy remaining args */
+    while (*cp && ai < 510) elf_arg_buf[ai++] = *cp++;
+    elf_arg_buf[ai] = '\0';
+
+    /* If not absolute path, try /bin/<name> */
+    char resolved_path[256];
+    if (elf_path[0] != '/') {
+      /* Build /bin/<name> */
+      int ri = 0;
+      const char *prefix = "/bin/";
+      while (*prefix && ri < 254) resolved_path[ri++] = *prefix++;
+      for (int i = 0; elf_path[i] && ri < 254; i++)
+        resolved_path[ri++] = elf_path[i];
+      resolved_path[ri] = '\0';
+    } else {
+      int i = 0;
+      while (elf_path[i] && i < 254) { resolved_path[i] = elf_path[i]; i++; }
+      resolved_path[i] = '\0';
+    }
+
+    /* Check if the resolved path exists in VFS */
+    {
+      struct file *test_f = vfs_open(resolved_path, O_RDONLY, 0);
+      if (test_f) {
+        vfs_close(test_f);
+
+        /* Build argv */
+        static char *elf_argv[8];
+        static char elf_arg0[256];
+        static char elf_arg1_buf[256];
+        int ii = 0;
+        while (resolved_path[ii] && ii < 254) {
+          elf_arg0[ii] = resolved_path[ii]; ii++;
+        }
+        elf_arg0[ii] = '\0';
+        elf_argv[0] = elf_arg0;
+
+        int elf_argc = 1;
+        if (ai > 0) {
+          /* Copy first arg */
+          int i = 0;
+          while (elf_arg_buf[i] && i < 254) {
+            elf_arg1_buf[i] = elf_arg_buf[i]; i++;
+          }
+          elf_arg1_buf[i] = '\0';
+          elf_argv[1] = elf_arg1_buf;
+          elf_argv[2] = 0;
+          elf_argc = 2;
+        } else {
+          elf_argv[1] = 0;
+        }
+
+        term_elf_io_start(term);
+        int rc = process_exec_args(resolved_path, elf_argc, elf_argv);
+        term_elf_io_stop();
+        if (rc < 0) {
+          term_puts(term, "\033[31mExec failed:\033[0m ");
+          term_puts(term, resolved_path);
+          term_puts(term, "\n");
+        }
+      } else {
+        term_puts(term, "\033[31mCommand not found:\033[0m ");
+        term_puts(term, cmd);
+        term_puts(term, "\nType 'help' for available commands.\n");
+      }
+    }
   }
 }
 

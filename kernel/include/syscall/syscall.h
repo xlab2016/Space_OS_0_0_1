@@ -324,4 +324,19 @@ long handle_syscall(struct pt_regs *regs);
  */
 void handle_sync_exception(struct pt_regs *regs);
 
+/**
+ * syscall_set_gui_stdout - Redirect ELF stdout/stderr to GUI terminal
+ * @hook: Function called with each write (buf, len), or NULL to disable
+ *
+ * Set before launching an ELF from the GUI terminal so its printf output
+ * appears in the terminal window instead of UART.
+ */
+void syscall_set_gui_stdout(void (*hook)(const char *buf, size_t len));
+
+/**
+ * syscall_set_gui_stdin - Redirect ELF stdin reads to GUI terminal input
+ * @hook: Function returning next character (-1 if none), or NULL to disable
+ */
+void syscall_set_gui_stdin(int (*hook)(void));
+
 #endif /* _SYSCALL_SYSCALL_H */
