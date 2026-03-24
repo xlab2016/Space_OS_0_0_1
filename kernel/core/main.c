@@ -442,6 +442,11 @@ static void init_subsystems(void *dtb) {
  * start_init_process - Start the first userspace process (PID 1)
  */
 
+/* Forward declarations for terminal periodic update */
+struct terminal;
+extern void term_tick(struct terminal *term);
+extern struct terminal *term_get_active(void);
+
 /* Global terminal pointer for keyboard callback */
 static void *g_active_terminal = 0;
 
@@ -547,6 +552,12 @@ static void start_init_process(void) {
     if (now - last_refresh >= REFRESH_MS) {
       last_refresh = now;
       needs_redraw = 1;
+
+      /* Tick terminal to detect finished ELF processes and show prompt */
+      struct terminal *active_term = term_get_active();
+      if (active_term) {
+        term_tick(active_term);
+      }
     }
 
     /* Redraw when needed - compose includes cursor drawing */

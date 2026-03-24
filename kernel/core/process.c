@@ -66,6 +66,7 @@ typedef int (*program_entry_t)(kapi_t *api, int argc, char **argv);
 
 // Forward declarations
 static void process_entry_wrapper(void);
+static void process_entry_wrapper_std(void);
 static void kill_children(int parent_pid);
 
 void process_init(void) {
@@ -210,6 +211,9 @@ int process_create(const char *path, int argc, char **argv) {
     return -1;
   }
 
+  // Detect ABI type before loading (peek at ELF header)
+  int abi_type = elf_detect_abi(data, size);
+
   // Calculate how much memory the program needs
   uint64_t prog_size = elf_calc_size(data, size);
   if (prog_size == 0) {
@@ -250,6 +254,10 @@ int process_create(const char *path, int argc, char **argv) {
   proc->entry = info.entry;
   proc->parent_pid = current_pid;
   proc->exit_status = 0;
+  proc->abi_type = abi_type;
+
+  printf("[PROC] ELF '%s': ABI=%s\n", path,
+         abi_type == ELF_ABI_STANDARD ? "standard" : "kapi");
 
   // Allocate stack
   proc->stack_size = PROCESS_STACK_SIZE;
@@ -269,24 +277,43 @@ int process_create(const char *path, int argc, char **argv) {
   // pc = entry wrapper, parameters in callee-saved registers x19-x22
   memset(&proc->context, 0, sizeof(cpu_context_t));
   arch_context_set_sp(&proc->context, stack_top);
-  arch_context_set_pc(&proc->context,
-                      (uint64_t)process_entry_wrapper); // Start here
 
 #ifdef ARCH_ARM64
   arch_context_set_flags(&proc->context,
                          0x3c5); // EL1h, DAIF masked (IRQs disabled initially)
-  // Pass arguments via callee-saved registers
-  proc->context.x[19] = proc->entry;          // x19 = entry point
-  proc->context.x[20] = (uint64_t)kapi_get(); // x20 = kapi pointer
-  proc->context.x[21] = (uint64_t)argc;       // x21 = argc
-  proc->context.x[22] = (uint64_t)argv;       // x22 = argv
+  if (abi_type == ELF_ABI_STANDARD) {
+    // Standard ABI: _start(x0=argc, x1=argv, x2=envp=NULL)
+    // Use process_entry_wrapper_std which passes (argc, argv, NULL)
+    arch_context_set_pc(&proc->context, (uint64_t)process_entry_wrapper_std);
+    proc->context.x[19] = proc->entry;     // x19 = entry point
+    proc->context.x[20] = (uint64_t)argc;  // x20 = argc
+    proc->context.x[21] = (uint64_t)argv;  // x21 = argv
+    proc->context.x[22] = 0;              // x22 = envp (NULL)
+  } else {
+    // kapi-ABI: entry(kapi, argc, argv)
+    arch_context_set_pc(&proc->context, (uint64_t)process_entry_wrapper);
+    proc->context.x[19] = proc->entry;          // x19 = entry point
+    proc->context.x[20] = (uint64_t)kapi_get(); // x20 = kapi pointer
+    proc->context.x[21] = (uint64_t)argc;       // x21 = argc
+    proc->context.x[22] = (uint64_t)argv;       // x22 = argv
+  }
 #elif defined(ARCH_X86_64)
   arch_context_set_flags(&proc->context, 0x202); // IF (interrupts enabled)
-  // Pass arguments via callee-saved registers (similar to ARM64)
-  proc->context.r12 = proc->entry;          // r12 = entry point
-  proc->context.r13 = (uint64_t)kapi_get(); // r13 = kapi pointer
-  proc->context.r14 = (uint64_t)argc;       // r14 = argc
-  proc->context.r15 = (uint64_t)argv;       // r15 = argv
+  if (abi_type == ELF_ABI_STANDARD) {
+    // Standard ABI: _start(rdi=argc, rsi=argv, rdx=envp=NULL)
+    arch_context_set_pc(&proc->context, (uint64_t)process_entry_wrapper_std);
+    proc->context.r12 = proc->entry;   // r12 = entry point
+    proc->context.r13 = (uint64_t)argc; // r13 = argc
+    proc->context.r14 = (uint64_t)argv; // r14 = argv
+    proc->context.r15 = 0;             // r15 = envp (NULL)
+  } else {
+    // kapi-ABI: entry(kapi, argc, argv)
+    arch_context_set_pc(&proc->context, (uint64_t)process_entry_wrapper);
+    proc->context.r12 = proc->entry;          // r12 = entry point
+    proc->context.r13 = (uint64_t)kapi_get(); // r13 = kapi pointer
+    proc->context.r14 = (uint64_t)argc;       // r14 = argc
+    proc->context.r15 = (uint64_t)argv;       // r15 = argv
+  }
 #elif defined(ARCH_X86)
   arch_context_set_flags(&proc->context, 0x202); // IF (interrupts enabled)
   proc->context.cs = 0x08;                       // Kernel code
@@ -298,9 +325,15 @@ int process_create(const char *path, int argc, char **argv) {
 
   // Pass arguments via preserved registers (ebx, esi, edi, ebp)
   proc->context.ebx = (uint32_t)proc->entry; // Entry point
-  proc->context.esi = (uint32_t)kapi_get();  // Arg1: kapi
-  proc->context.edi = (uint32_t)argc;        // Arg2: argc
-  proc->context.ebp = (uint32_t)argv;        // Arg3: argv
+  if (abi_type == ELF_ABI_STANDARD) {
+    proc->context.esi = (uint32_t)argc;  // Arg1: argc
+    proc->context.edi = (uint32_t)argv;  // Arg2: argv
+    proc->context.ebp = 0;              // Arg3: envp (NULL)
+  } else {
+    proc->context.esi = (uint32_t)kapi_get();  // Arg1: kapi
+    proc->context.edi = (uint32_t)argc;        // Arg2: argc
+    proc->context.ebp = (uint32_t)argv;        // Arg3: argv
+  }
 
   // Start at our ASM wrapper
   extern void x86_process_entry(void);
@@ -359,6 +392,40 @@ static void __attribute__((naked)) process_entry_wrapper(void) {
 // directly to ASM.
 static void process_entry_wrapper(void) {
   // Should not be called
+  process_exit(0);
+}
+#endif
+
+// Standard-ABI entry wrapper: calls entry(argc, argv, envp) without kapi.
+// Used for ELF binaries built with our custom crt0 (x0=argc, x1=argv, x2=envp).
+#ifdef ARCH_ARM64
+// x19 = entry, x20 = argc, x21 = argv, x22 = envp (NULL)
+static void __attribute__((naked)) process_entry_wrapper_std(void) {
+  asm volatile("mov x0, x20\n"     // x0 = argc
+               "mov x1, x21\n"     // x1 = argv
+               "mov x2, x22\n"     // x2 = envp
+               "blr x19\n"         // Call _start(argc, argv, envp)
+               "bl process_exit\n" // Exit with return value
+               "1: b 1b\n"         // Should never reach here
+               ::
+                   : "memory");
+}
+#elif defined(ARCH_X86_64)
+// r12 = entry, r13 = argc, r14 = argv, r15 = envp (NULL)
+static void __attribute__((naked)) process_entry_wrapper_std(void) {
+  asm volatile("movq %%r13, %%rdi\n"  // rdi = argc (1st arg)
+               "movq %%r14, %%rsi\n"  // rsi = argv (2nd arg)
+               "movq %%r15, %%rdx\n"  // rdx = envp (3rd arg)
+               "callq *%%r12\n"       // Call _start(argc, argv, envp)
+               "movq %%rax, %%rdi\n"  // rdi = exit status
+               "callq process_exit\n" // Exit
+               "1: jmp 1b\n"          // Should never reach here
+               ::
+                   : "memory");
+}
+#elif defined(ARCH_X86)
+static void process_entry_wrapper_std(void) {
+  // Should not be called directly on x86 (handled by ASM)
   process_exit(0);
 }
 #endif
@@ -584,6 +651,54 @@ int process_exec_args(const char *path, int argc, char **argv) {
 int process_exec(const char *path) {
   char *argv[1] = {(char *)path};
   return process_exec_args(path, 1, argv);
+}
+
+/*
+ * process_is_running - Check whether a process is still alive.
+ * Returns 1 if PID is found and in READY or RUNNING state, 0 otherwise.
+ */
+int process_is_running(int pid) {
+  if (pid <= 0)
+    return 0;
+  uint64_t flags = spin_lock_irqsave(&proc_table_lock);
+  int running = 0;
+  for (int i = 0; i < MAX_PROCESSES; i++) {
+    if (proc_table[i].pid == pid) {
+      proc_state_t s = proc_table[i].state;
+      running = (s == PROC_STATE_READY || s == PROC_STATE_RUNNING ||
+                 s == PROC_STATE_BLOCKED);
+      break;
+    }
+  }
+  spin_unlock_irqrestore(&proc_table_lock, flags);
+  return running;
+}
+
+/*
+ * process_launch_elf - Launch an ELF binary non-blocking (no GUI freeze).
+ *
+ * Creates the process and marks it READY so the preemptive scheduler will
+ * run it concurrently with the GUI event loop.  The caller returns
+ * immediately — it must NOT busy-wait for completion.
+ *
+ * ABI is auto-detected via elf_detect_abi():
+ *   ELF_ABI_STANDARD → _start(argc, argv, envp=NULL)   (our custom crt0)
+ *   ELF_ABI_KAPI     → entry(kapi, argc, argv)          (embedded apps)
+ *
+ * Returns the new process PID on success, or -1 on failure.
+ */
+int process_launch_elf(const char *path, int argc, char **argv) {
+  int pid = process_create(path, argc, argv);
+  if (pid < 0)
+    return -1;
+
+  if (process_start(pid) < 0) {
+    printf("[PROC] launch_elf: failed to start pid %d\n", pid);
+    return -1;
+  }
+
+  printf("[PROC] Launched ELF '%s' as pid %d (non-blocking)\n", path, pid);
+  return pid;
 }
 
 // Called from IRQ handler for preemptive scheduling

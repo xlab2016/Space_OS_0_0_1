@@ -97,6 +97,10 @@ typedef struct {
     uint64_t load_size;   /* Total size in memory */
 } elf_load_info_t;
 
+/* ELF ABI types for process execution */
+#define ELF_ABI_KAPI     0   /* kapi-ABI: entry(kapi_t*, argc, argv) */
+#define ELF_ABI_STANDARD 1   /* Standard ABI: _start with x0=argc, x1=argv, x2=envp */
+
 /* Validate ELF header, returns 0 if valid */
 int elf_validate(const void *data, size_t size);
 
@@ -108,5 +112,8 @@ int elf_load_at(const void *data, size_t size, uint64_t base, elf_load_info_t *i
 
 /* Calculate total memory size needed for ELF */
 uint64_t elf_calc_size(const void *data, size_t size);
+
+/* Detect ELF ABI type (returns ELF_ABI_KAPI or ELF_ABI_STANDARD) */
+int elf_detect_abi(const void *data, size_t size);
 
 #endif /* ELF_H */
