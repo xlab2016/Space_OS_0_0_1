@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../Magic_Kernel_Dotnet/Magic.Kernel/Compilation/**/*.cs" />
+    <Compile Include="../../Magic_Kernel_Dotnet/Magic.Kernel/Processor/**/*.cs" />
+    <Compile Include="../../Magic_Kernel_Dotnet/Magic.Kernel/Core/DefType.cs" />
+    <Compile Include="../../Magic_Kernel_Dotnet/Magic.Kernel/Core/DefClass.cs" />
+    <Compile Include="../../Magic_Kernel_Dotnet/Magic.Kernel/Core/IDefType.cs" />
+    <Compile Include="../../Magic_Kernel_Dotnet/Magic.Kernel/Core/ExecutionCallContext.cs" />
+    <Compile Include="../../Magic_Kernel_Dotnet/Magic.Kernel/Core/SpaceEnvironment.cs" />
+    <Compile Include="../../Magic_Kernel_Dotnet/Magic.Kernel/Space/**/*.cs" />
+    <Compile Include="../../Magic_Kernel_Dotnet/Magic.Kernel/Types/**/*.cs" />
+    <Compile Include="../../Magic_Kernel_Dotnet/Magic.Kernel/ObjectInstance.cs" />
+    <Compile Include="../../Magic_Kernel_Dotnet/Magic.Kernel/MemoryBlock.cs" />
+    <Compile Include="../../Magic_Kernel_Dotnet/Magic.Kernel/MemoryAddress.cs" />
+    <Compile Include="../../Magic_Kernel_Dotnet/Magic.Kernel/MemoryContext.cs" />
+    <Compile Include="../../Magic_Kernel_Dotnet/Magic.Kernel/KernelMemory.cs" />
+    <Compile Include="../../Magic_Kernel_Dotnet/Magic.Kernel/DeltaWeakDisposable.cs" />
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Text.Json" Version="9.0.0" />
+  </ItemGroup>
+</Project>
