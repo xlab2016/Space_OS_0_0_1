@@ -1,0 +1,8 @@
+# .NET build artifacts
+*.bak
+*.orig
+obj/
+bin/
+
+# Build output directories
+/tmp/

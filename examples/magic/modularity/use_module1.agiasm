@@ -1,0 +1,86 @@
+@ AGI 0.0.1 ;
+program use_module1
+module modularity
+system samples
+
+procedure Main
+{
+  asm {
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+  }
+}
+
+function module1:add
+{
+  asm {
+    nop
+  }
+}
+
+function module1:sub
+{
+  asm {
+    nop
+  }
+}
+
+function module1:mul
+{
+  asm {
+    nop
+  }
+}
+
+function module1:div
+{
+  asm {
+    nop
+  }
+}
+
+function module1:calculate
+{
+  asm {
+    nop
+    nop
+    nop
+    nop
+  }
+}
+
+entrypoint
+{
+  asm {
+    push 0
+    call Main
+  }
+}
