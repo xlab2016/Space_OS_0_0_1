@@ -621,6 +621,247 @@ static int exec_one(Interpreter *interp)
         break;
     }
 
+    case OP_MOVE: {
+        /* move [dst], [src] or move [dst], value — copy src to dst memory slot */
+        if (cmd->op1.kind == OPERAND_MEMORY || cmd->op1.kind == OPERAND_GLOBAL_MEMORY) {
+            long dst_idx = cmd->op1.mem_index;
+            int dst_global = (cmd->op1.is_global || cmd->op1.kind == OPERAND_GLOBAL_MEMORY
+                              || interp->call_stack.top == 0);
+            Memory *dst_mem = dst_global ? &interp->global_memory : &interp->memory;
+
+            Value src_val = val_nil();
+            if (cmd->op2.kind == OPERAND_MEMORY || cmd->op2.kind == OPERAND_GLOBAL_MEMORY) {
+                int src_global = (cmd->op2.is_global || cmd->op2.kind == OPERAND_GLOBAL_MEMORY
+                                  || interp->call_stack.top == 0);
+                Memory *src_mem = src_global ? &interp->global_memory : &interp->memory;
+                memory_get(src_mem, cmd->op2.mem_index, &src_val);
+            } else if (cmd->op2.kind == OPERAND_INT) {
+                src_val = val_int(cmd->op2.int_val);
+            } else if (cmd->op2.kind == OPERAND_FLOAT) {
+                src_val = val_float(cmd->op2.float_val);
+            } else if (cmd->op2.kind == OPERAND_STRING || cmd->op2.kind == OPERAND_TYPE) {
+                src_val = val_str(cmd->op2.str_val);
+            }
+            memory_set(dst_mem, dst_idx, src_val);
+        }
+        break;
+    }
+
+    case OP_GETVERTEX: {
+        /* getvertex idx: push nil (space graph not implemented) */
+        if (interp->verbose)
+            fprintf(stderr, "[interp] getvertex: space graph not implemented\n");
+        stack_push(&interp->stack, val_nil());
+        break;
+    }
+
+    case OP_ACALL: {
+        /* acall fn_name: async call — treated same as call in basic runtime */
+        const char *fn_name = cmd->op1.str_val;
+        if (interp->unit) {
+            Block *block = find_procedure(interp->unit, fn_name);
+            if (!block) block = find_function(interp->unit, fn_name);
+            if (block) {
+                if (interp->call_stack.top >= CALLSTACK_MAX) {
+                    fprintf(stderr, "[interp] call stack overflow (acall)\n");
+                    return -1;
+                }
+                CallFrame *frame = &interp->call_stack.frames[interp->call_stack.top++];
+                frame->block  = interp->current_block;
+                frame->ret_ip = interp->ip;
+                strncpy(frame->name, fn_name, PROC_NAME_MAX - 1);
+                interp->current_block = block;
+                build_label_map(&interp->label_map, block);
+                interp->ip = 0;
+                break;
+            }
+        }
+        if (!exec_syscall(interp, fn_name)) {
+            if (interp->verbose)
+                fprintf(stderr, "[interp] unknown async function: %s\n", fn_name);
+        }
+        break;
+    }
+
+    case OP_EXPR: {
+        /* expr: start lambda — in basic runtime, skip lambda body until defexpr
+           Push nil as placeholder for the lambda value */
+        /* Count how many instructions to skip (op1 = count if present) */
+        /* Simple approach: push nil and skip forward until OP_DEFEXPR */
+        stack_push(&interp->stack, val_nil()); /* lambda placeholder */
+        /* Skip lambda body instructions until OP_DEFEXPR */
+        if (interp->current_block) {
+            while (interp->ip < interp->current_block->count) {
+                Opcode opc = interp->current_block->instrs[interp->ip].opcode;
+                interp->ip++;
+                if (opc == OP_DEFEXPR) break;
+            }
+        }
+        break;
+    }
+
+    case OP_DEFEXPR: {
+        /* defexpr: end of lambda body — no-op at top level */
+        break;
+    }
+
+    case OP_LAMBDA: {
+        /* lambda: no-op at runtime (marks lambda body boundary) */
+        break;
+    }
+
+    case OP_EQUALS: {
+        /* equals: pop b, pop a, push (a == b) */
+        Value b, a;
+        stack_pop(&interp->stack, &b);
+        stack_pop(&interp->stack, &a);
+        stack_push(&interp->stack, val_bool(val_equal(a, b)));
+        break;
+    }
+
+    case OP_NOT: {
+        /* not: pop v, push !v */
+        Value v;
+        stack_pop(&interp->stack, &v);
+        stack_push(&interp->stack, val_bool(!val_truthy(v)));
+        break;
+    }
+
+    case OP_LT: {
+        /* lt: pop b, pop a, push (a < b) */
+        Value b, a;
+        stack_pop(&interp->stack, &b);
+        stack_pop(&interp->stack, &a);
+        int result = 0;
+        /* Numeric comparison */
+        double da = 0, db = 0;
+        int a_num = 0, b_num = 0;
+        if (a.kind == VAL_INT)   { da = (double)a.int_val;  a_num = 1; }
+        if (a.kind == VAL_FLOAT) { da = a.float_val;         a_num = 1; }
+        if (b.kind == VAL_INT)   { db = (double)b.int_val;  b_num = 1; }
+        if (b.kind == VAL_FLOAT) { db = b.float_val;         b_num = 1; }
+        if (a_num && b_num) result = da < db;
+        else if (a.kind == VAL_STRING && b.kind == VAL_STRING)
+            result = strcmp(a.str_val, b.str_val) < 0;
+        stack_push(&interp->stack, val_bool(result));
+        break;
+    }
+
+    case OP_ADD: {
+        /* add: pop b, pop a, push (a + b) — numeric or string concatenation */
+        Value b, a;
+        stack_pop(&interp->stack, &b);
+        stack_pop(&interp->stack, &a);
+        if (a.kind == VAL_STRING || b.kind == VAL_STRING) {
+            /* String concatenation */
+            char sa[VAL_STR_MAX], sb[VAL_STR_MAX];
+            val_to_str(a, sa, sizeof(sa));
+            val_to_str(b, sb, sizeof(sb));
+            char result[VAL_STR_MAX];
+            int la = (int)strlen(sa);
+            int lb = (int)strlen(sb);
+            int lr = la + lb < VAL_STR_MAX - 1 ? la + lb : VAL_STR_MAX - 1;
+            for (int i = 0; i < la && i < lr; i++) result[i] = sa[i];
+            for (int i = 0; i < lb && la + i < lr; i++) result[la + i] = sb[i];
+            result[lr] = '\0';
+            stack_push(&interp->stack, val_str(result));
+        } else if (a.kind == VAL_FLOAT || b.kind == VAL_FLOAT) {
+            double da = (a.kind == VAL_FLOAT) ? a.float_val : (double)a.int_val;
+            double db = (b.kind == VAL_FLOAT) ? b.float_val : (double)b.int_val;
+            stack_push(&interp->stack, val_float(da + db));
+        } else {
+            stack_push(&interp->stack, val_int(a.int_val + b.int_val));
+        }
+        break;
+    }
+
+    case OP_SUB: {
+        /* sub: pop b, pop a, push (a - b) */
+        Value b, a;
+        stack_pop(&interp->stack, &b);
+        stack_pop(&interp->stack, &a);
+        if (a.kind == VAL_FLOAT || b.kind == VAL_FLOAT) {
+            double da = (a.kind == VAL_FLOAT) ? a.float_val : (double)a.int_val;
+            double db = (b.kind == VAL_FLOAT) ? b.float_val : (double)b.int_val;
+            stack_push(&interp->stack, val_float(da - db));
+        } else {
+            stack_push(&interp->stack, val_int(a.int_val - b.int_val));
+        }
+        break;
+    }
+
+    case OP_MUL: {
+        /* mul: pop b, pop a, push (a * b) */
+        Value b, a;
+        stack_pop(&interp->stack, &b);
+        stack_pop(&interp->stack, &a);
+        if (a.kind == VAL_FLOAT || b.kind == VAL_FLOAT) {
+            double da = (a.kind == VAL_FLOAT) ? a.float_val : (double)a.int_val;
+            double db = (b.kind == VAL_FLOAT) ? b.float_val : (double)b.int_val;
+            stack_push(&interp->stack, val_float(da * db));
+        } else {
+            stack_push(&interp->stack, val_int(a.int_val * b.int_val));
+        }
+        break;
+    }
+
+    case OP_DIV: {
+        /* div: pop b, pop a, push (a / b) */
+        Value b, a;
+        stack_pop(&interp->stack, &b);
+        stack_pop(&interp->stack, &a);
+        double da = (a.kind == VAL_FLOAT) ? a.float_val : (double)a.int_val;
+        double db = (b.kind == VAL_FLOAT) ? b.float_val : (double)b.int_val;
+        if (db == 0.0) {
+            if (interp->verbose)
+                fprintf(stderr, "[interp] division by zero\n");
+            stack_push(&interp->stack, val_nil());
+        } else if (a.kind != VAL_FLOAT && b.kind != VAL_FLOAT && b.int_val != 0) {
+            stack_push(&interp->stack, val_int(a.int_val / b.int_val));
+        } else {
+            stack_push(&interp->stack, val_float(da / db));
+        }
+        break;
+    }
+
+    case OP_POW: {
+        /* pow: pop b, pop a, push (a ^ b) via double conversion */
+        Value b, a;
+        stack_pop(&interp->stack, &b);
+        stack_pop(&interp->stack, &a);
+        double da = (a.kind == VAL_FLOAT) ? a.float_val : (double)a.int_val;
+        double db = (b.kind == VAL_FLOAT) ? b.float_val : (double)b.int_val;
+        /* Simple integer power for small exponents; fallback to approximation */
+        double result = 1.0;
+        long   exp_i  = (long)db;
+        if (db == (double)exp_i && exp_i >= 0 && exp_i <= 20) {
+            for (long i = 0; i < exp_i; i++) result *= da;
+        } else {
+            /* Use repeated multiplication approximation (no libm in kernel) */
+            /* For negative exponents: result = 1 / da^|exp| */
+            int neg = (exp_i < 0);
+            long abs_exp = neg ? -exp_i : exp_i;
+            result = 1.0;
+            for (long i = 0; i < abs_exp && i < 64; i++) result *= da;
+            if (neg) result = (result != 0.0) ? 1.0 / result : 0.0;
+        }
+        if (a.kind != VAL_FLOAT && b.kind != VAL_FLOAT && db == (double)exp_i
+            && exp_i >= 0 && exp_i <= 20) {
+            stack_push(&interp->stack, val_int((long)result));
+        } else {
+            stack_push(&interp->stack, val_float(result));
+        }
+        break;
+    }
+
+    case OP_DEFOBJ: {
+        /* defobj type_name: create a new object — same as OP_DEF in basic runtime */
+        Value top;
+        if (!stack_pop(&interp->stack, &top)) break;
+        stack_push(&interp->stack, top);
+        break;
+    }
+
     default:
         if (interp->verbose)
             fprintf(stderr, "[interp] unknown opcode: %d\n", cmd->opcode);

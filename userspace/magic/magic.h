@@ -56,31 +56,46 @@ typedef struct {
 } Token;
 
 /* ------------------------------------------------------------------ */
-/* Opcodes                                                             */
+/* Opcodes - matches Magic.Kernel/Processor/Opcodes.cs enum values     */
 /* ------------------------------------------------------------------ */
 typedef enum {
-    OP_NOP = 0,
-    OP_PUSH,
-    OP_POP,
-    OP_CALL,
-    OP_RET,
-    OP_SYSCALL,
-    OP_DEF,
-    OP_DEFGEN,
-    OP_CALLOBJ,
-    OP_AWAITOBJ,
-    OP_STREAMWAITOBJ,
-    OP_AWAIT,
-    OP_LABEL,
-    OP_CMP,
-    OP_JE,
-    OP_JMP,
-    OP_GETOBJ,
-    OP_SETOBJ,
-    OP_STREAMWAIT,
-    OP_ADDVERTEX,
-    OP_ADDRELATION,
-    OP_ADDSHAPE,
+    OP_NOP           = 0,
+    OP_ADDVERTEX     = 1,
+    OP_ADDRELATION   = 2,
+    OP_ADDSHAPE      = 3,
+    OP_CALL          = 4,
+    OP_PUSH          = 5,
+    OP_POP           = 6,
+    OP_SYSCALL       = 7,
+    OP_RET           = 8,
+    OP_MOVE          = 9,
+    OP_GETVERTEX     = 10,
+    OP_DEF           = 11,
+    OP_DEFGEN        = 12,
+    OP_CALLOBJ       = 13,
+    OP_AWAITOBJ      = 14,
+    OP_STREAMWAITOBJ = 15,
+    OP_AWAIT         = 16,
+    OP_LABEL         = 17,
+    OP_CMP           = 18,
+    OP_JE            = 19,
+    OP_JMP           = 20,
+    OP_GETOBJ        = 21,
+    OP_SETOBJ        = 22,
+    OP_STREAMWAIT    = 23,
+    OP_ACALL         = 24,  /* async call */
+    OP_EXPR          = 25,  /* start lambda body collection */
+    OP_DEFEXPR       = 26,  /* end lambda body / lambda return */
+    OP_LAMBDA        = 27,  /* no-op at runtime; marks lambda body boundary */
+    OP_EQUALS        = 28,  /* pop b, pop a, push (a == b) */
+    OP_NOT           = 29,  /* pop v, push !v */
+    OP_LT            = 30,  /* pop b, pop a, push (a < b) */
+    OP_ADD           = 31,  /* pop b, pop a, push (a + b) */
+    OP_SUB           = 32,  /* pop b, pop a, push (a - b) */
+    OP_MUL           = 33,  /* pop b, pop a, push (a * b) */
+    OP_DIV           = 34,  /* pop b, pop a, push (a / b) */
+    OP_POW           = 35,  /* pop b, pop a, push (a ^ b) */
+    OP_DEFOBJ        = 36,  /* object construction (semantic alias of OP_DEF) */
 } Opcode;
 
 /* ------------------------------------------------------------------ */
