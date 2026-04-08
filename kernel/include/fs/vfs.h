@@ -143,7 +143,9 @@ struct file_operations {
     loff_t (*llseek)(struct file *, loff_t, int);
     int (*open)(struct inode *, struct file *);
     int (*release)(struct inode *, struct file *);
-    int (*readdir)(struct file *, void *, int (*)(void *, const char *, int, loff_t, ino_t, unsigned));
+    int (*readdir)(struct file *, void *,
+                   int (*)(void *, const char *, int, loff_t, ino_t, unsigned,
+                          size_t));
     int (*ioctl)(struct file *, unsigned int, unsigned long);
     int (*mmap)(struct file *, void *);
 };
@@ -302,7 +304,9 @@ int vfs_close(struct file *file);
 /**
  * vfs_readdir - Read directory entries
  */
-int vfs_readdir(struct file *file, void *ctx, int (*filldir)(void *, const char *, int, loff_t, ino_t, unsigned));
+int vfs_readdir(struct file *file, void *ctx,
+                int (*filldir)(void *, const char *, int, loff_t, ino_t, unsigned,
+                               size_t));
 
 /**
  * vfs_read - Read from a file

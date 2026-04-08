@@ -1,4 +1,4 @@
-﻿/*
+/*
  * SPACE-OS - GUI System Header
  */
 
@@ -50,6 +50,7 @@ void term_destroy(struct terminal *term);
 void term_putc(struct terminal *term, char c);
 void term_puts(struct terminal *term, const char *str);
 void term_render(struct terminal *term);
+void term_resize_to_fit(struct terminal *term, int content_w, int content_h);
 void term_handle_key(struct terminal *term, int key);
 struct terminal *term_get_active(void);
 void term_set_active(struct terminal *term);

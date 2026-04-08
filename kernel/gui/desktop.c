@@ -655,7 +655,8 @@ int desktop_context_menu_hover(int mx, int my) {
 /* ===================================================================== */
 
 static int dir_scan_callback(void *ctx, const char *name, int len,
-                             loff_t offset, ino_t ino, unsigned type);
+                             loff_t offset, ino_t ino, unsigned type,
+                             size_t dsize);
 
 void desktop_refresh(void) {
   /* Clear current icons */
@@ -687,10 +688,12 @@ void desktop_refresh(void) {
 }
 
 static int dir_scan_callback(void *ctx, const char *name, int len,
-                             loff_t offset, ino_t ino, unsigned type) {
+                             loff_t offset, ino_t ino, unsigned type,
+                             size_t dsize) {
   (void)ctx;
   (void)offset;
   (void)ino;
+  (void)dsize;
 
   /* Skip . and .. */
   if (name[0] == '.' && (len == 1 || (len == 2 && name[1] == '.'))) {

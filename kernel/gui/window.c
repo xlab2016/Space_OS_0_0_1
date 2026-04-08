@@ -27,6 +27,7 @@ extern int term_get_input_len(struct terminal *t);
 extern char term_get_input_char(struct terminal *t, int idx);
 extern void term_render(struct terminal *term);
 extern void term_set_content_pos(struct terminal *t, int x, int y);
+extern void term_resize_to_fit(struct terminal *t, int content_w, int content_h);
 
 /* ===================================================================== */
 /* Display and Color */
@@ -839,7 +840,7 @@ extern struct file *vfs_open(const char *path, int flags, mode_t mode);
 extern int vfs_close(struct file *file);
 extern int vfs_readdir(struct file *file, void *ctx,
                        int (*filldir)(void *, const char *, int, loff_t, ino_t,
-                                      unsigned));
+                                      unsigned, size_t));
 
 /* Forward declaration */
 /* Helper for string compare */
@@ -938,9 +939,10 @@ struct find_ctx {
 };
 
 static int find_callback(void *ctx, const char *name, int len, loff_t off,
-                         ino_t ino, unsigned type) {
+                         ino_t ino, unsigned type, size_t dsize) {
   (void)off;
   (void)ino;
+  (void)dsize;
   struct find_ctx *fc = (struct find_ctx *)ctx;
   if (fc->clicked)
     return 0;
@@ -1000,9 +1002,11 @@ struct fm_ctx {
 };
 
 static int fm_render_callback(void *ctx, const char *name, int len,
-                              loff_t offset, ino_t ino, unsigned type) {
+                              loff_t offset, ino_t ino, unsigned type,
+                              size_t dsize) {
   (void)offset;
   (void)ino;
+  (void)dsize;
   struct fm_ctx *c = (struct fm_ctx *)ctx;
 
   /* Skip . and .. */
@@ -1246,9 +1250,6 @@ static void fm_on_mouse(struct window *win, int x, int y, int buttons) {
   fctx.slot_h = 70;
   fctx.win_w = win->width - 40;
 
-  extern int vfs_readdir(
-      struct file * file, void *ctx,
-      int (*filldir)(void *, const char *, int, loff_t, ino_t, unsigned));
   vfs_readdir(dir, &fctx, find_callback);
 
   vfs_close(dir);
@@ -2093,7 +2094,8 @@ static void draw_window(struct window *win) {
       term = term_get_active();
     }
     if (term) {
-      /* Update terminal's content area to match window position */
+      /* Grow/shrink grid to match window client area */
+      term_resize_to_fit(term, content_w, content_h);
       term_set_content_pos(term, content_x, content_y);
       term_render(term);
     } else {
@@ -3320,12 +3322,12 @@ void gui_handle_key_event(int key) {
     /* Check if it's a Terminal window */
     if (focused_window->title[0] == 'T' && focused_window->title[1] == 'e' &&
         focused_window->title[2] == 'r') {
-      /* Use file-scope terminal declarations */
-      struct terminal *term = term_get_active();
-      printk("KEY: term_get_active=%p, key=%d\n", term, key);
-      if (term) {
+      struct terminal *term =
+          (struct terminal *)focused_window->userdata;
+      if (!term)
+        term = term_get_active();
+      if (term)
         term_handle_key(term, key);
-      }
     }
     /* Check if it's a Notepad window */
     else if (focused_window->title[0] == 'N' &&

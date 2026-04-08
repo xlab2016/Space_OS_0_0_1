@@ -19,6 +19,10 @@
 #include "../include/string.h"
 #include "../include/stdarg.h"
 
+#ifndef EOF
+#define EOF (-1)
+#endif
+
 /* ------------------------------------------------------------------ */
 /* Memory allocation: map to kernel allocator                          */
 /* ------------------------------------------------------------------ */
@@ -140,14 +144,20 @@ typedef struct magic_kfile {
     char   *wbuf;
     size_t  wbuf_cap;
     size_t  wbuf_len;
-    /* Is this a write-mode file? */
+    /* 1=write buffer, 0=read buffer, -1=stderr, -2=stdout (not "is writing") */
     int     writing;
     /* Saved path for writing (so we can flush to VFS on fclose) */
     char    path[256];
 } MAGIC_KFILE;
 
-/* stderr pseudo-object for error output */
-static MAGIC_KFILE magic_stderr_obj;
+#define MAGIC_KF_READ  0
+#define MAGIC_KF_WRITE 1
+#define MAGIC_KF_ERR   (-1)
+#define MAGIC_KF_OUT   (-2)
+
+/* stderr/stdout: negative .writing so they never match read-mode (0) */
+static MAGIC_KFILE magic_stderr_obj = {.writing = MAGIC_KF_ERR};
+static MAGIC_KFILE magic_stdout_obj = {.writing = MAGIC_KF_OUT};
 
 static inline MAGIC_KFILE *magic_get_stderr(void) {
     return &magic_stderr_obj;
@@ -178,7 +188,7 @@ static inline int magic_fprintf_file(MAGIC_KFILE *f, const char *fmt, ...) {
     va_start(args, fmt);
     int n = kvsnprintf_pub(buf, sizeof(buf), fmt, args);
     va_end(args);
-    if (n > 0 && f->writing) {
+    if (n > 0 && f->writing == MAGIC_KF_WRITE) {
         while (f->wbuf_len + (size_t)n > f->wbuf_cap) {
             size_t new_cap = f->wbuf_cap ? f->wbuf_cap * 2 : 4096;
             char *nb = (char *)krealloc(f->wbuf, new_cap, 0);
@@ -192,10 +202,11 @@ static inline int magic_fprintf_file(MAGIC_KFILE *f, const char *fmt, ...) {
 }
 
 #undef  fprintf
-#define fprintf(f, ...) \
-    ( ((MAGIC_KFILE *)(f) == &magic_stderr_obj) \
-      ? magic_fprintf_stderr(__VA_ARGS__) \
-      : magic_fprintf_file((MAGIC_KFILE *)(f), __VA_ARGS__) )
+#define fprintf(f, ...)                                                        \
+    ((((MAGIC_KFILE *)(f))->writing == MAGIC_KF_ERR) ||                        \
+     (((MAGIC_KFILE *)(f))->writing == MAGIC_KF_OUT))                          \
+        ? magic_fprintf_stderr(__VA_ARGS__)                                    \
+        : magic_fprintf_file((MAGIC_KFILE *)(f), __VA_ARGS__)
 
 /* ------------------------------------------------------------------ */
 /* FILE* operations                                                    */
@@ -213,15 +224,15 @@ static inline FILE *magic_fopen(const char *path, const char *mode) {
         for (size_t i = 0; i < sizeof(MAGIC_KFILE); i++) p[i] = 0;
     }
 
-    int writing = (mode[0] == 'w');
-    f->writing = writing;
+    int want_write = (mode[0] == 'w');
+    f->writing = want_write ? MAGIC_KF_WRITE : MAGIC_KF_READ;
 
     size_t plen = 0;
     while (path[plen] && plen < 255) plen++;
     for (size_t i = 0; i < plen; i++) f->path[i] = path[i];
     f->path[plen] = '\0';
 
-    if (!writing) {
+    if (!want_write) {
         vfs_node_t *node = vfs_lookup(path);
         if (!node) { kfree(f); return NULL; }
         f->rsize = node->size;
@@ -242,7 +253,7 @@ static inline FILE *magic_fopen(const char *path, const char *mode) {
 }
 
 static inline int magic_fseek(FILE *f, long offset, int whence) {
-    if (!f || f->writing) return -1;
+    if (!f || f->writing != MAGIC_KF_READ) return -1;
     size_t new_pos;
     if (whence == SEEK_SET)
         new_pos = (offset >= 0) ? (size_t)offset : 0;
@@ -260,12 +271,12 @@ static inline int magic_fseek(FILE *f, long offset, int whence) {
 }
 
 static inline long magic_ftell(FILE *f) {
-    if (!f || f->writing) return -1L;
+    if (!f || f->writing != MAGIC_KF_READ) return -1L;
     return (long)f->rpos;
 }
 
 static inline size_t magic_fread(void *ptr, size_t size, size_t nmemb, FILE *f) {
-    if (!f || f->writing || !f->rbuf) return 0;
+    if (!f || f->writing != MAGIC_KF_READ || !f->rbuf) return 0;
     size_t avail  = f->rsize - f->rpos;
     size_t want   = size * nmemb;
     if (want > avail) want = avail;
@@ -279,7 +290,7 @@ static inline size_t magic_fread(void *ptr, size_t size, size_t nmemb, FILE *f) 
 }
 
 static inline size_t magic_fwrite(const void *ptr, size_t size, size_t nmemb, FILE *f) {
-    if (!f || !f->writing) return 0;
+    if (!f || f->writing != MAGIC_KF_WRITE) return 0;
     size_t total = size * nmemb;
     while (f->wbuf_len + total > f->wbuf_cap) {
         size_t new_cap = f->wbuf_cap ? f->wbuf_cap * 2 : 4096;
@@ -306,19 +317,65 @@ static inline int magic_fputs(const char *s, FILE *f) {
 }
 
 static inline int magic_fclose(FILE *f) {
-    if (!f) return -1;
-    if (f->writing && f->wbuf && f->wbuf_len > 0) {
-        vfs_node_t *out = vfs_create(f->path);
-        if (out) {
-            vfs_write_compat(out, f->wbuf, f->wbuf_len);
+    if (!f)
+        return EOF;
+    /* Static stderr/stdout — never free */
+    if (f->writing == MAGIC_KF_ERR || f->writing == MAGIC_KF_OUT)
+        return 0;
+
+    int ok = 1;
+    if (f->writing == MAGIC_KF_WRITE) {
+        printk(KERN_INFO
+               "[spc-diag] magic_fclose: path=\"%s\" wbuf_len=%lu writing=%d\n",
+               f->path, (unsigned long)f->wbuf_len, f->writing);
+        if (f->wbuf_len > 0 && f->wbuf_len <= 48) {
+            char preview[160];
+            int pi = 0;
+            for (size_t i = 0; i < f->wbuf_len && pi < (int)sizeof(preview) - 4;
+                 i++) {
+                unsigned char c = (unsigned char)f->wbuf[i];
+                if (c >= 32 && c < 127)
+                    preview[pi++] = (char)c;
+                else {
+                    preview[pi++] = '\\';
+                    preview[pi++] = 'x';
+                    preview[pi++] = "0123456789abcdef"[c >> 4];
+                    preview[pi++] = "0123456789abcdef"[c & 15];
+                }
+            }
+            preview[pi] = '\0';
+            printk(KERN_INFO "[spc-diag] magic_fclose: preview \"%s\"\n", preview);
+        } else if (f->wbuf_len == 0) {
+            printk(KERN_WARNING
+                   "[spc-diag] magic_fclose: wbuf_len=0 (nothing buffered — "
+                   "fprintf may have routed to stderr or format failed)\n");
+        }
+        extern int ramfs_write_bytes_at_path(const char *path, const uint8_t *data,
+                                             size_t len);
+        if (f->path[0] != '/') {
+            printk(KERN_ERR "[spc-diag] magic_fclose: need absolute path, got '%s'\n",
+                   f->path);
+            ok = 0;
         } else {
-            printk("[magic] fclose: cannot create '%s' in VFS\n", f->path);
+            int rw = ramfs_write_bytes_at_path(f->path, (const uint8_t *)f->wbuf,
+                                                 f->wbuf_len);
+            if (rw != 0) {
+                printk(KERN_ERR
+                       "[spc-diag] magic_fclose: ramfs_write_bytes_at_path(\"%s\") "
+                       "rc=%d len=%lu\n",
+                       f->path, rw, (unsigned long)f->wbuf_len);
+                ok = 0;
+            } else {
+                printk(KERN_INFO
+                       "[spc-diag] magic_fclose: wrote %lu bytes to \"%s\"\n",
+                       (unsigned long)f->wbuf_len, f->path);
+            }
         }
     }
     if (f->rbuf) kfree(f->rbuf);
     if (f->wbuf) kfree(f->wbuf);
     kfree(f);
-    return 0;
+    return ok ? 0 : EOF;
 }
 
 #define fopen(path, mode)      magic_fopen((path), (mode))
@@ -330,21 +387,14 @@ static inline int magic_fclose(FILE *f) {
 #define fputc(c, f)            magic_fputc((c), (FILE *)(f))
 #define fputs(s, f)            magic_fputs((s), (FILE *)(f))
 
-/* EOF sentinel */
-#ifndef EOF
-#define EOF (-1)
-#endif
-
 /* fgetc: read one byte from a read-mode MAGIC_KFILE */
 static inline int magic_fgetc(FILE *f) {
-    if (!f || f->writing || !f->rbuf || f->rpos >= f->rsize)
+    if (!f || f->writing != MAGIC_KF_READ || !f->rbuf || f->rpos >= f->rsize)
         return EOF;
     return (unsigned char)f->rbuf[f->rpos++];
 }
 #define fgetc(f) magic_fgetc((FILE *)(f))
 
-/* stdout: a static sentinel object for magic_printf output */
-static MAGIC_KFILE magic_stdout_obj;
 static inline MAGIC_KFILE *magic_get_stdout(void) { return &magic_stdout_obj; }
 #define stdout (magic_get_stdout())
 

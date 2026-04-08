@@ -97,6 +97,68 @@ static int kern_streq(const char *a, const char *b) {
     return *a == *b;
 }
 
+static int kern_streq_ci(const char *a, const char *b) {
+    while (*a && *b) {
+        int ca = (*a >= 'A' && *a <= 'Z') ? *a + 32 : *a;
+        int cb = (*b >= 'A' && *b <= 'Z') ? *b + 32 : *b;
+        if (ca != cb) return 0;
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
+/* True if s is "agiasm" (CI); optional for --output <format> */
+static int kern_output_is_agiasm(const char *s) {
+    return s && kern_streq_ci(s, "agiasm");
+}
+
+/* Parse --output agiasm / -o agiasm / --output=agiasm / one token "--output agiasm" */
+static void kern_spc_parse_output_flag(int argc, char **argv, int *output_asm) {
+    for (int i = 1; i < argc; i++) {
+        char *arg = argv[i];
+        if (!arg) continue;
+
+        if (kern_streq(arg, "--agiasm")) {
+            *output_asm = 1;
+            continue;
+        }
+
+        if (kern_streq(arg, "--output") || kern_streq(arg, "-o")) {
+            if (i + 1 < argc && kern_output_is_agiasm(argv[i + 1])) {
+                *output_asm = 1;
+                i++;
+            }
+            continue;
+        }
+
+        if (strncmp(arg, "--output=", 9) == 0 && kern_output_is_agiasm(arg + 9)) {
+            *output_asm = 1;
+            continue;
+        }
+        if (strncmp(arg, "-o=", 3) == 0 && kern_output_is_agiasm(arg + 3)) {
+            *output_asm = 1;
+            continue;
+        }
+
+        /* e.g. GUI terminal: one argv "--output agiasm" */
+        if (strncmp(arg, "--output", 8) == 0 && arg[8] != '\0') {
+            const char *v = arg + 8;
+            if (*v == '=')
+                v++;
+            else
+                while (*v == ' ' || *v == '\t') v++;
+            if (kern_output_is_agiasm(v)) *output_asm = 1;
+            continue;
+        }
+        if (arg[0] == '-' && arg[1] == 'o' && arg[2] != '\0' && arg[2] != '=') {
+            const char *v = arg + 2;
+            while (*v == ' ' || *v == '\t') v++;
+            if (kern_output_is_agiasm(v)) *output_asm = 1;
+        }
+    }
+}
+
 /* UART-only diagnostics (survives GUI hook / panic); tag each line [spc-diag] */
 static void spc_diag_safe_line(const char *tag, const char *s) {
     char buf[192];
@@ -223,6 +285,15 @@ static int kern_magic_compile_file_safe(const char *path, CompileResult *out) {
  */
 int kern_spc_run(int argc, char **argv) {
     printk(KERN_INFO "[spc-diag] === kern_spc_run enter ===\n");
+    {
+        static int spc_stdio_banner_once;
+        if (!spc_stdio_banner_once) {
+            spc_stdio_banner_once = 1;
+            printk(KERN_INFO
+                   "[spc-diag] spc stdio: fclose flushes via "
+                   "ramfs_write_bytes_at_path (not legacy vfs_create)\n");
+        }
+    }
     spc_diag_argv_uart(argc, argv);
 
     /* Debug: show raw argv contents and lengths */
@@ -246,20 +317,22 @@ int kern_spc_run(int argc, char **argv) {
 
     if (argc < 2) {
         printk(KERN_INFO "[spc-diag] argc<2 usage\n");
-        magic_printf("\033[33mUsage:\033[0m spc <file.agi> [--agiasm]\n");
-        magic_printf("  Compiles Magic language source to .agic bytecode\n");
+        magic_printf("\033[33mUsage:\033[0m spc <file.agi> [--agiasm | --output agiasm]\n");
+        magic_printf("  Compiles Magic language source to .agic or .agiasm\n");
         return 1;
     }
 
     const char *input_file = NULL;
     int         output_asm = 0;
 
+    kern_spc_parse_output_flag(argc, argv, &output_asm);
+
+    /* Last non-flag token except standalone "agiasm" (--output agiasm) */
     for (int i = 1; i < argc; i++) {
-        if (kern_streq(argv[i], "--agiasm")) {
-            output_asm = 1;
-        } else if (argv[i][0] != '-') {
-            input_file = argv[i];
-        }
+        if (!argv[i] || argv[i][0] == '\0') continue;
+        if (argv[i][0] == '-') continue;
+        if (kern_output_is_agiasm(argv[i])) continue;
+        input_file = argv[i];
     }
 
     if (!input_file) {

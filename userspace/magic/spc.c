@@ -1,7 +1,7 @@
 /*
  * spc.c - Space Compiler (Magic Language Compiler)
  *
- * Command: spc <file.agi> [--agiasm]
+ * Command: spc <file.agi> [--agiasm | --output agiasm | -o agiasm ...]
  *
  * Compiles a .agi Magic source file into:
  *   .agic  - binary bytecode (default)
@@ -46,16 +46,74 @@ static void print_header(void)
     printf("\n");
 }
 
+static int str_eq_ci(const char *a, const char *b)
+{
+    while (*a && *b) {
+        int ca = (*a >= 'A' && *a <= 'Z') ? *a + 32 : *a;
+        int cb = (*b >= 'A' && *b <= 'Z') ? *b + 32 : *b;
+        if (ca != cb) return 0;
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
+static int output_name_is_agiasm(const char *s)
+{
+    return s && str_eq_ci(s, "agiasm");
+}
+
+static void parse_output_flags(int argc, char **argv, int *output_agiasm)
+{
+    for (int i = 1; i < argc; i++) {
+        char *arg = argv[i];
+        if (!arg) continue;
+
+        if (strcmp(arg, "--agiasm") == 0) {
+            *output_agiasm = 1;
+            continue;
+        }
+        if (strcmp(arg, "--output") == 0 || strcmp(arg, "-o") == 0) {
+            if (i + 1 < argc && output_name_is_agiasm(argv[i + 1])) {
+                *output_agiasm = 1;
+                i++;
+            }
+            continue;
+        }
+        if (strncmp(arg, "--output=", 9) == 0 && output_name_is_agiasm(arg + 9)) {
+            *output_agiasm = 1;
+            continue;
+        }
+        if (strncmp(arg, "-o=", 3) == 0 && output_name_is_agiasm(arg + 3)) {
+            *output_agiasm = 1;
+            continue;
+        }
+        if (strncmp(arg, "--output", 8) == 0 && arg[8] != '\0') {
+            const char *v = arg + 8;
+            if (*v == '=') v++;
+            else while (*v == ' ' || *v == '\t') v++;
+            if (output_name_is_agiasm(v)) *output_agiasm = 1;
+            continue;
+        }
+        if (arg[0] == '-' && arg[1] == 'o' && arg[2] != '\0' && arg[2] != '=') {
+            const char *v = arg + 2;
+            while (*v == ' ' || *v == '\t') v++;
+            if (output_name_is_agiasm(v)) *output_agiasm = 1;
+        }
+    }
+}
+
 static void print_usage(void)
 {
-    printf("Usage: spc <file.agi> [--agiasm]\n");
+    printf("Usage: spc <file.agi> [--agiasm | --output agiasm | -o agiasm ...]\n");
     printf("\n");
-    printf("  <file.agi>   Magic source file to compile\n");
-    printf("  --agiasm     Output text assembly instead of binary\n");
+    printf("  <file.agi>        Magic source file to compile\n");
+    printf("  --agiasm          Output text assembly instead of binary\n");
+    printf("  --output agiasm   Same (also: -o agiasm, --output=agiasm)\n");
     printf("\n");
     printf("Output:\n");
     printf("  .agic    Binary bytecode (default)\n");
-    printf("  .agiasm  Text assembly listing (with --agiasm)\n");
+    printf("  .agiasm  Text assembly listing\n");
     printf("\n");
 }
 
@@ -140,14 +198,17 @@ int main(int argc, char *argv[])
     const char *input_file = NULL;
     int   output_agiasm   = 0;
 
+    parse_output_flags(argc, argv, &output_agiasm);
+
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--agiasm") == 0) {
-            output_agiasm = 1;
-        } else if (strcmp(argv[i], "--no-color") == 0) {
-            use_color = 0;
-        } else if (argv[i][0] != '-') {
-            input_file = argv[i];
-        }
+        if (argv[i] && strcmp(argv[i], "--no-color") == 0) use_color = 0;
+    }
+
+    for (int i = 1; i < argc; i++) {
+        if (!argv[i]) continue;
+        if (argv[i][0] == '-') continue;
+        if (output_name_is_agiasm(argv[i])) continue;
+        input_file = argv[i];
     }
 
     if (!input_file) {

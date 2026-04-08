@@ -225,11 +225,13 @@ static const struct file_operations ramfs_file_ops = {
 /* ===================================================================== */
 
 static int ramfs_readdir_callback(void *ctx, const char *name, int len,
-                                  loff_t offset, ino_t ino, unsigned type) {
+                                  loff_t offset, ino_t ino, unsigned type,
+                                  size_t dsize) {
   (void)ctx;
   (void)offset;
   (void)ino;
   (void)type;
+  (void)dsize;
 
   /* Print entry for now */
   printk("%.*s\n", len, name);
@@ -238,7 +240,7 @@ static int ramfs_readdir_callback(void *ctx, const char *name, int len,
 
 static int ramfs_readdir(struct file *file, void *ctx,
                          int (*filldir)(void *, const char *, int, loff_t,
-                                        ino_t, unsigned)) {
+                                        ino_t, unsigned, size_t)) {
   struct ramfs_inode *dir = (struct ramfs_inode *)file->private_data;
 
   if (!dir || !S_ISDIR(dir->mode)) {
@@ -249,9 +251,9 @@ static int ramfs_readdir(struct file *file, void *ctx,
 
   /* . and .. */
   if (filldir) {
-    filldir(ctx, ".", 1, pos++, dir->ino, S_IFDIR >> 12);
+    filldir(ctx, ".", 1, pos++, dir->ino, S_IFDIR >> 12, (size_t)0);
     filldir(ctx, "..", 2, pos++, dir->parent ? dir->parent->ino : dir->ino,
-            S_IFDIR >> 12);
+            S_IFDIR >> 12, (size_t)0);
   }
 
   /* Children */
@@ -262,7 +264,9 @@ static int ramfs_readdir(struct file *file, void *ctx,
       len++;
 
     if (filldir) {
-      filldir(ctx, child->name, len, pos++, child->ino, child->mode >> 12);
+      size_t entsz = S_ISDIR(child->mode) ? (size_t)0 : child->size;
+      filldir(ctx, child->name, len, pos++, child->ino, child->mode >> 12,
+              entsz);
     }
     child = child->sibling;
   }
@@ -726,6 +730,142 @@ int ramfs_create_dir(const char *path, mode_t mode) {
 
   printk(KERN_INFO "RAMFS: Created directory '%s'\n", path);
 
+  return 0;
+}
+
+/* ===================================================================== */
+/* Write or replace file by absolute path (full directory walk)            */
+/* Used by kernel Magic stdio shim — vfs_write path can miss updates.     */
+/* ===================================================================== */
+
+int ramfs_write_bytes_at_path(const char *path, const uint8_t *data, size_t len) {
+  if (!ramfs_sb.root || !path || path[0] != '/') {
+    printk(KERN_ERR "[spc-diag] ramfs_write_bytes_at_path: bad args root=%p path=%p\n",
+           (void *)ramfs_sb.root, (void *)path);
+    return -1;
+  }
+
+  const char *last_slash = NULL;
+  for (const char *q = path; *q; q++) {
+    if (*q == '/')
+      last_slash = q;
+  }
+  if (!last_slash) {
+    printk(KERN_ERR "[spc-diag] ramfs_write_bytes_at_path: no slash in \"%s\"\n",
+           path);
+    return -1;
+  }
+
+  char filename[RAMFS_MAX_NAME + 1];
+  const char *fn = last_slash + 1;
+  int fl = 0;
+  while (fn[fl] && fl < RAMFS_MAX_NAME) {
+    filename[fl] = fn[fl];
+    fl++;
+  }
+  filename[fl] = '\0';
+  if (fl == 0) {
+    printk(KERN_ERR "[spc-diag] ramfs_write_bytes_at_path: empty basename \"%s\"\n",
+           path);
+    return -1;
+  }
+
+  struct ramfs_inode *parent = ramfs_sb.root;
+  if (last_slash > path) {
+    char dirname[RAMFS_MAX_NAME + 1];
+    int dlen = (int)(last_slash - (path + 1));
+    if (dlen <= 0 || dlen > RAMFS_MAX_NAME) {
+      printk(KERN_ERR
+             "[spc-diag] ramfs_write_bytes_at_path: bad dirname len=%d path=\"%s\"\n",
+             dlen, path);
+      return -1;
+    }
+    for (int i = 0; i < dlen; i++)
+      dirname[i] = path[1 + i];
+    dirname[dlen] = '\0';
+
+    const char *p = dirname;
+    char comp[RAMFS_MAX_NAME + 1];
+    while (*p) {
+      int i = 0;
+      while (*p && *p != '/' && i < RAMFS_MAX_NAME)
+        comp[i++] = *p++;
+      comp[i] = '\0';
+      while (*p == '/')
+        p++;
+      if (!comp[0])
+        continue;
+      parent = ramfs_lookup_child(parent, comp);
+      if (!parent || !S_ISDIR(parent->mode)) {
+        printk(KERN_ERR
+               "[spc-diag] ramfs_write_bytes_at_path: walk failed at \"%s\" "
+               "(parent=%p is_dir=%d)\n",
+               comp, (void *)parent, parent ? S_ISDIR(parent->mode) : 0);
+        return -1;
+      }
+    }
+  }
+
+  struct ramfs_inode *file = ramfs_lookup_child(parent, filename);
+  if (!file) {
+    struct ramfs_inode *nf = ramfs_alloc_inode(S_IFREG | 0644, filename);
+    if (!nf) {
+      printk(KERN_ERR
+             "[spc-diag] ramfs_write_bytes_at_path: ramfs_alloc_inode fail \"%s\"\n",
+             path);
+      return -ENOMEM;
+    }
+    if (len > 0 && data) {
+      nf->data = kmalloc(len, GFP_KERNEL);
+      if (!nf->data) {
+        printk(KERN_ERR
+               "[spc-diag] ramfs_write_bytes_at_path: new file kmalloc %lu \"%s\"\n",
+               (unsigned long)len, path);
+        ramfs_free_inode(nf);
+        return -ENOMEM;
+      }
+      for (size_t j = 0; j < len; j++)
+        nf->data[j] = data[j];
+      nf->size = len;
+      nf->data_capacity = len;
+    }
+    ramfs_add_child(parent, nf);
+    printk(KERN_INFO "RAMFS: Wrote new '%s' (%lu bytes)\n", path,
+           (unsigned long)len);
+    return 0;
+  }
+
+  if (S_ISDIR(file->mode)) {
+    printk(KERN_ERR "[spc-diag] ramfs_write_bytes_at_path: \"%s\" is a directory\n",
+           path);
+    return -1;
+  }
+
+  if (file->data) {
+    kfree(file->data);
+    file->data = NULL;
+  }
+  file->size = 0;
+  file->data_capacity = 0;
+
+  if (len > 0 && data) {
+    size_t cap = (len + RAMFS_BLOCK_SIZE - 1) & ~(size_t)(RAMFS_BLOCK_SIZE - 1);
+    if (cap < len)
+      cap = len;
+    file->data = kmalloc(cap, GFP_KERNEL);
+    if (!file->data) {
+      printk(KERN_ERR "[spc-diag] ramfs_write_bytes_at_path: kmalloc %lu fail \"%s\"\n",
+             (unsigned long)cap, path);
+      return -ENOMEM;
+    }
+    for (size_t j = 0; j < len; j++)
+      file->data[j] = data[j];
+    file->size = len;
+    file->data_capacity = cap;
+  }
+
+  printk(KERN_INFO "RAMFS: Overwrote '%s' (%lu bytes)\n", path,
+         (unsigned long)len);
   return 0;
 }
 

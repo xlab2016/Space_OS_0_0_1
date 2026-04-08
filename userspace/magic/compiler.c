@@ -1183,7 +1183,8 @@ int magic_save_agiasm(const ExecutableUnit *unit, const char *path)
     write_block(f, &((ExecutableUnit *)unit)->entry_point, "    ");
     fprintf(f, "  }\n}\n");
 
-    fclose(f);
+    if (fclose(f) != 0)
+        return 0;
     return 1;
 }
 
@@ -1287,7 +1288,8 @@ int magic_save_agic(const ExecutableUnit *unit, const char *path)
 
     write_block_bin(f, &((ExecutableUnit *)unit)->entry_point);
 
-    fclose(f);
+    if (fclose(f) != 0)
+        return 0;
     return 1;
 }
 

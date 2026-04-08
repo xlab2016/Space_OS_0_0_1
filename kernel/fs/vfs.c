@@ -383,7 +383,7 @@ int vfs_mkdir(const char *path, mode_t mode) {
 
 int vfs_readdir(struct file *file, void *ctx,
                 int (*filldir)(void *, const char *, int, loff_t, ino_t,
-                               unsigned)) {
+                               unsigned, size_t)) {
   if (!file || !file->f_op || !file->f_op->readdir) {
     return -EINVAL;
   }

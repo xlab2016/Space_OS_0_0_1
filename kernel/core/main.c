@@ -317,7 +317,7 @@ static void init_subsystems(void *dtb) {
                     "    print(add(42, 7));\n"
                     "}\n");
 
-  /* Magic language demo directory and file (AGI) */
+  /* Magic language demos (mirror examples/magic in repo) */
   vfs_mkdir("/examples/magic", 0755);
   {
     static const char magic_hello_src[] =
@@ -333,14 +333,74 @@ static void init_subsystems(void *dtb) {
         "  }\n"
         "}\n";
 
-    struct file *magic_hello =
-        vfs_open("/examples/magic/hello.agi", O_CREAT | O_WRONLY, 0644);
-    if (magic_hello) {
-      size_t magic_len = 0;
-      while (magic_hello_src[magic_len])
-        magic_len++;
-      vfs_write(magic_hello, magic_hello_src, magic_len);
-      vfs_close(magic_hello);
+    static const char magic_greeting_src[] =
+        "@ AGI 1.0\n"
+        "program Greeting\n"
+        "\n"
+        "procedure say_hello\n"
+        "{\n"
+        "  asm {\n"
+        "    push string: \"Hello, Space OS!\"\n"
+        "    push 1\n"
+        "    call print\n"
+        "    push string: \"Powered by Magic Language\"\n"
+        "    push 1\n"
+        "    call print\n"
+        "    ret\n"
+        "  }\n"
+        "}\n"
+        "\n"
+        "entrypoint\n"
+        "{\n"
+        "  asm {\n"
+        "    call say_hello\n"
+        "  }\n"
+        "}\n";
+
+    static const char magic_conditional_src[] =
+        "@ AGI 1.0\n"
+        "program Conditional\n"
+        "\n"
+        "entrypoint\n"
+        "{\n"
+        "  asm {\n"
+        "    push 42\n"
+        "    pop [0]\n"
+        "    cmp [0], 42\n"
+        "    je answer_found\n"
+        "    push string: \"Not the answer\"\n"
+        "    push 1\n"
+        "    call print\n"
+        "    jmp done\n"
+        "    label answer_found\n"
+        "    push string: \"The answer to everything is 42!\"\n"
+        "    push 1\n"
+        "    call print\n"
+        "    label done\n"
+        "  }\n"
+        "}\n";
+
+    struct {
+      const char *path;
+      const char *data;
+      size_t len;
+    } magic_files[] = {
+        {"/examples/magic/hello.agi", magic_hello_src,
+         sizeof(magic_hello_src) - 1},
+        {"/examples/magic/greeting.agi", magic_greeting_src,
+         sizeof(magic_greeting_src) - 1},
+        {"/examples/magic/conditional.agi", magic_conditional_src,
+         sizeof(magic_conditional_src) - 1},
+    };
+
+    for (size_t mi = 0; mi < sizeof(magic_files) / sizeof(magic_files[0]);
+         mi++) {
+      struct file *mf = vfs_open(magic_files[mi].path, O_CREAT | O_WRONLY,
+                                 0644);
+      if (mf) {
+        vfs_write(mf, magic_files[mi].data, magic_files[mi].len);
+        vfs_close(mf);
+      }
     }
   }
 

@@ -110,6 +110,7 @@ struct terminal {
 #define TERM_HISTORY_LEN 128
   char history[32][128];
   int history_count;
+  int history_browse_idx; /* -1 = new line; else index in history[] */
 };
 
 static struct terminal *active_terminal = NULL;
@@ -423,6 +424,15 @@ static int str_starts_with(const char *str, const char *prefix) {
   return 1;
 }
 
+/* Exact first word: "cat" matches "cat" or "cat foo", not "category" */
+static int cmd_is(const char *cmd, const char *name) {
+  while (*name && *cmd == *name) {
+    cmd++;
+    name++;
+  }
+  return *name == '\0' && (*cmd == '\0' || *cmd == ' ');
+}
+
 static char to_lower(char c) {
   if (c >= 'A' && c <= 'Z')
     return (char)(c + 32);
@@ -516,9 +526,69 @@ static void build_path(struct terminal *term, const char *input, char *out,
 
 #include "fs/vfs.h"
 
+static void term_cat_output_byte(struct terminal *term, unsigned char uc) {
+  if (uc == '\n' || uc == '\r' || uc == '\t')
+    term_putc(term, (char)uc);
+  else if (uc >= 32 && uc < 127)
+    term_putc(term, (char)uc);
+  else if (uc != 0)
+    term_putc(term, '.');
+}
+
+static void term_cat_path(struct terminal *term, const char *path_arg) {
+  char path[256];
+  build_path(term, path_arg, path, sizeof(path));
+  if (!path[0]) {
+    term_puts(term, "cat: missing file\n");
+    return;
+  }
+  struct file *f = vfs_open(path, O_RDONLY, 0);
+  if (!f) {
+    term_puts(term, "cat: ");
+    term_puts(term, path);
+    term_puts(term, ": No such file\n");
+    return;
+  }
+  char buf[512];
+  int n;
+  while ((n = vfs_read(f, buf, sizeof(buf))) > 0) {
+    for (int i = 0; i < n; i++)
+      term_cat_output_byte(term, (unsigned char)buf[i]);
+  }
+  vfs_close(f);
+  term_putc(term, '\n');
+}
+
+static void term_put_size_column(struct terminal *term, unsigned type,
+                                 size_t fsize) {
+  if (type == 4) {
+    term_puts(term, "       - ");
+    return;
+  }
+  char rev[24];
+  int n = 0;
+  size_t v = fsize;
+  if (v == 0)
+    rev[n++] = '0';
+  while (v && n < 23) {
+    rev[n++] = (char)('0' + (v % 10U));
+    v /= 10U;
+  }
+  int pad = 8 - n;
+  if (pad < 0)
+    pad = 0;
+  while (pad-- > 0)
+    term_putc(term, ' ');
+  while (n-- > 0)
+    term_putc(term, rev[n]);
+  term_putc(term, ' ');
+}
+
 /* Helper for ls command */
 static int ls_callback(void *ctx, const char *name, int len, loff_t offset,
-                       ino_t ino, unsigned type) {
+                       ino_t ino, unsigned type, size_t fsize) {
+  (void)offset;
+  (void)ino;
   struct terminal *term = (struct terminal *)ctx;
 
   char buf[256];
@@ -527,16 +597,16 @@ static int ls_callback(void *ctx, const char *name, int len, loff_t offset,
     buf[i] = name[i];
   buf[i] = '\0';
 
-  /* Type >> 12. 4 = DIR, 8 = REG */
-  /* Check if directory */
+  term_put_size_column(term, type, fsize);
+
   if (type == 4) {
-    term_puts(term, "\033[1;34m"); /* Bright Blue */
+    term_puts(term, "\033[1;34m");
     term_puts(term, buf);
-    term_puts(term, "/\033[0m  ");
+    term_puts(term, "/\033[0m");
   } else {
     term_puts(term, buf);
-    term_puts(term, "  ");
   }
+  term_putc(term, '\n');
   return 0;
 }
 
@@ -558,10 +628,10 @@ void term_execute_command(struct terminal *term, const char *cmd) {
   } else if (str_starts_with(cmd, "help")) {
     term_puts(term, "\033[1;36mSPACE-OS Terminal v2.0\033[0m\n");
     term_puts(term, "\033[33mFile Commands:\033[0m\n");
-    term_puts(term, "  ls        - List directory contents\n");
+    term_puts(term, "  ls        - List files (size column; dirs show -)\n");
     term_puts(term, "  cd <dir>  - Change directory\n");
     term_puts(term, "  pwd       - Print working directory\n");
-    term_puts(term, "  cat <f>   - Display file contents\n");
+    term_puts(term, "  cat <f>   - Display file (alias: type <f>)\n");
     term_puts(term, "  touch <f> - Create empty file\n");
     term_puts(term, "  mkdir <d> - Create directory\n");
     term_puts(term, "  rmdir <d> - Remove empty directory\n");
@@ -582,6 +652,7 @@ void term_execute_command(struct terminal *term, const char *cmd) {
     term_puts(term, "  id        - Show user/group info\n");
     term_puts(term, "  hostname  - Show hostname\n");
     term_puts(term, "  history   - Show command history\n");
+    term_puts(term, "  Up/Down   - Walk command history (virtio keyboard)\n");
     term_puts(term, "  free      - Memory usage\n");
     term_puts(term, "  ps        - Process list\n");
     term_puts(term, "  clear     - Clear screen\n");
@@ -738,9 +809,9 @@ void term_execute_command(struct terminal *term, const char *cmd) {
 
     struct file *dir = vfs_open(path, O_RDONLY, 0);
     if (dir) {
+      term_puts(term, "    SIZE NAME\n");
       vfs_readdir(dir, term, ls_callback);
       vfs_close(dir);
-      term_puts(term, "\n");
     } else {
       term_puts(term, "ls: Failed to open directory: ");
       term_puts(term, path);
@@ -807,8 +878,6 @@ void term_execute_command(struct terminal *term, const char *cmd) {
       term_puts(term, path);
       term_puts(term, "\n");
     }
-  } else if (str_starts_with(cmd, "cat")) {
-    term_puts(term, "cat: No such file or directory\n");
   } else if (str_starts_with(cmd, "echo ")) {
     term_puts(term, cmd + 5);
     term_puts(term, "\n");
@@ -946,28 +1015,17 @@ void term_execute_command(struct terminal *term, const char *cmd) {
   } else if (str_starts_with(cmd, "browser")) {
     term_puts(term, "Starting Browser...\n");
     gui_create_window("Browser", 150, 100, 600, 450);
-  } else if (str_starts_with(cmd, "cat ")) {
-    char path[256];
-    build_path(term, cmd + 4, path, sizeof(path));
-    if (!path[0]) {
-      term_puts(term, "cat: missing file\n");
+  } else if (cmd_is(cmd, "cat") || cmd_is(cmd, "type")) {
+    const char *rest = cmd;
+    while (*rest && *rest != ' ')
+      rest++;
+    while (*rest == ' ')
+      rest++;
+    if (*rest == '\0') {
+      term_puts(term, "usage: cat <file>   (Windows: type <file>)\n");
       return;
     }
-    struct file *f = vfs_open(path, O_RDONLY, 0);
-    if (f) {
-      char buf[512];
-      int n;
-      while ((n = vfs_read(f, buf, sizeof(buf) - 1)) > 0) {
-        buf[n] = '\0';
-        term_puts(term, buf);
-      }
-      vfs_close(f);
-      term_puts(term, "\n");
-    } else {
-      term_puts(term, "cat: ");
-      term_puts(term, path);
-      term_puts(term, ": No such file\n");
-    }
+    term_cat_path(term, rest);
     /* touch command handled later with better implementation */
   } else if (str_starts_with(cmd, "mkdir_placeholder")) {
     /* placeholder removed - mkdir implemented below */
@@ -1443,6 +1501,24 @@ void term_execute_command(struct terminal *term, const char *cmd) {
 /* Input Handling */
 /* ===================================================================== */
 
+static void term_clear_input_display(struct terminal *term) {
+  while (term->input_len > 0) {
+    term->input_len--;
+    term->cursor_x--;
+    int idx = term->cursor_y * term->cols + term->cursor_x;
+    term->chars[idx] = ' ';
+  }
+}
+
+static void term_set_input_from_history(struct terminal *term,
+                                        const char *line) {
+  term_clear_input_display(term);
+  for (int i = 0; line[i] && term->input_len < 255; i++) {
+    term->input_buf[term->input_len++] = line[i];
+    term_putc(term, line[i]);
+  }
+}
+
 void term_handle_key(struct terminal *term, int key) {
   if (!term)
     return;
@@ -1451,6 +1527,7 @@ void term_handle_key(struct terminal *term, int key) {
     /* Process command */
     term->input_buf[term->input_len] = '\0';
     term_putc(term, '\n');
+    term->history_browse_idx = -1;
 
     /* Execute command */
     if (term->input_len > 0) {
@@ -1472,7 +1549,30 @@ void term_handle_key(struct terminal *term, int key) {
 
     term->input_len = 0;
     term->input_pos = 0;
+  } else if (key == 0x100) { /* virtio-input KEY_UP */
+    if (term->history_count <= 0)
+      return;
+    if (term->history_browse_idx < 0)
+      term->history_browse_idx = term->history_count - 1;
+    else if (term->history_browse_idx > 0)
+      term->history_browse_idx--;
+    else
+      return;
+    term_set_input_from_history(term,
+                                term->history[term->history_browse_idx]);
+  } else if (key == 0x101) { /* KEY_DOWN */
+    if (term->history_browse_idx < 0)
+      return;
+    if (term->history_browse_idx < term->history_count - 1) {
+      term->history_browse_idx++;
+      term_set_input_from_history(term,
+                                  term->history[term->history_browse_idx]);
+    } else {
+      term->history_browse_idx = -1;
+      term_clear_input_display(term);
+    }
   } else if (key == '\b' || key == 127) {
+    term->history_browse_idx = -1;
     if (term->input_len > 0) {
       term->input_len--;
       term->cursor_x--;
@@ -1480,6 +1580,8 @@ void term_handle_key(struct terminal *term, int key) {
       term->chars[idx] = ' ';
     }
   } else if (key >= 32 && key < 127) {
+    if (term->history_browse_idx >= 0)
+      term->history_browse_idx = -1;
     if (term->input_len < 255) {
       term->input_buf[term->input_len++] = key;
       term_putc(term, key);
@@ -1525,6 +1627,9 @@ struct terminal *term_create(int x, int y, int cols, int rows) {
   term->escape_len = 0;
   term->input_len = 0;
   term->input_pos = 0;
+  term->history_count = 0;
+  term->history_browse_idx = -1;
+  term->scroll_offset = 0;
   term->content_x = x;
   term->content_y = y;
 
@@ -1579,6 +1684,82 @@ char term_get_input_char(struct terminal *t, int idx) {
 }
 
 /* Accessor to set content area position (for window.c) */
+void term_resize_to_fit(struct terminal *t, int content_w, int content_h) {
+  if (!t)
+    return;
+
+  int min_w = TERM_CHAR_W + TERM_PADDING * 2;
+  int min_h = TERM_CHAR_H + TERM_PADDING * 2;
+  if (content_w < min_w)
+    content_w = min_w;
+  if (content_h < min_h)
+    content_h = min_h;
+
+  int usable_w = content_w - TERM_PADDING * 2;
+  int usable_h = content_h - TERM_PADDING * 2;
+  int nc = usable_w / TERM_CHAR_W;
+  int nr = usable_h / TERM_CHAR_H;
+  if (nc < 1)
+    nc = 1;
+  if (nr < 1)
+    nr = 1;
+
+  if (nc == t->cols && nr == t->rows)
+    return;
+
+  size_t new_size = (size_t)nc * (size_t)nr;
+  char *nch = kmalloc(new_size);
+  uint8_t *nfg = kmalloc(new_size);
+  uint8_t *nbg = kmalloc(new_size);
+  if (!nch || !nfg || !nbg) {
+    if (nch)
+      kfree(nch);
+    if (nfg)
+      kfree(nfg);
+    if (nbg)
+      kfree(nbg);
+    return;
+  }
+
+  for (size_t i = 0; i < new_size; i++) {
+    nch[i] = ' ';
+    nfg[i] = t->current_fg;
+    nbg[i] = t->current_bg;
+  }
+
+  int oc = t->cols;
+  int old_rows = t->rows;
+  int copy_r = nr < old_rows ? nr : old_rows;
+  int copy_c = nc < oc ? nc : oc;
+  for (int row = 0; row < copy_r; row++) {
+    for (int col = 0; col < copy_c; col++) {
+      int oi = row * oc + col;
+      int ni = row * nc + col;
+      nch[ni] = t->chars[oi];
+      nfg[ni] = t->fg_colors[oi];
+      nbg[ni] = t->bg_colors[oi];
+    }
+  }
+
+  kfree(t->chars);
+  kfree(t->fg_colors);
+  kfree(t->bg_colors);
+  t->chars = nch;
+  t->fg_colors = nfg;
+  t->bg_colors = nbg;
+  t->cols = nc;
+  t->rows = nr;
+
+  if (t->cursor_x >= nc)
+    t->cursor_x = nc - 1;
+  if (t->cursor_x < 0)
+    t->cursor_x = 0;
+  if (t->cursor_y >= nr)
+    t->cursor_y = nr - 1;
+  if (t->cursor_y < 0)
+    t->cursor_y = 0;
+}
+
 void term_set_content_pos(struct terminal *t, int x, int y) {
   if (!t)
     return;
