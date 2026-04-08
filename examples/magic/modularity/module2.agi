@@ -1,0 +1,135 @@
+@AGI 0.0.1;
+
+program module2;
+system samples;
+module modularity;
+
+Point: type {
+	public
+		X: int;
+		Y: int;
+	constructor Point(x, y) {
+		X:= x;
+		Y:= y;
+	}
+
+	method Add(p: Point) {
+		X += p.X;
+		Y += p.Y;
+	}
+
+	method Print() {
+		println(#"X: {X}, Y: {Y}");
+	}
+}
+
+Shape: class {
+	public
+		Origin: Point;
+
+	constructor Shape(origin: Point) {
+		Origin:= origin;
+	}
+
+	method Move(to: Point) {
+		Origin.Add(to);
+	}
+
+	method Draw() {
+		Origin.Print();
+	}
+}
+
+Circle: Shape {
+	public
+		Radius: float<decimal>;
+
+	constructor Circle(origin: Point, radius: float<decimal>) {
+		Shape(origin);
+		Radius:= radius;
+	}
+
+	method Draw() {
+		Shape.Draw();
+		print(#"Radius: {Radius}");
+	}
+}
+
+Square: Shape {
+	public
+		W, H: float<decimal>;
+
+	constructor Square(origin: Point, w, h) {
+		Shape(origin);
+		W:= w;
+		H:= h;
+	}
+
+	method Draw() {
+		Shape.Draw();
+		print(#"W: {W}, H: {H}");
+	}
+}
+
+CircleSquare: Circle, Square {
+	public
+		Origin: Shape.Origin;
+		Radius: Circle.Radius;
+		W: Square.W;
+		H: Square.H;
+
+	constructor CircleSquare(origin, r, w, h) {
+		Circle(origin, r);
+		Square(origin, w, h);
+	}
+
+	method Draw() {
+		Circle.Draw();
+		Square.Draw();
+	}
+}
+
+CircleSquareList: CircleSquare[] {
+}
+
+Person: class {
+	public
+		Name: string;
+
+	method Draw(board: Board) {
+	}
+
+	method Say(what: string) {
+		println(#"{Name}(say): {what}");
+	}
+}
+
+Board: class {
+	public
+		Surface: Point[];
+		Shapes: Shape[];
+
+	method Draw(shape: Shape) {
+		switch shape {
+			if shape is Circle: circle
+				Draw(circle);
+			if shape is Square: square
+				Draw(square);
+		}
+	}
+
+	method Draw(circle: Circle) {
+		Shapes += circle;
+	}
+
+	method Draw(square: Square) {
+		Shapes += square;
+	}
+}
+
+Room: class {
+	public
+		Board: Board;
+
+		Persons: Person[];
+}

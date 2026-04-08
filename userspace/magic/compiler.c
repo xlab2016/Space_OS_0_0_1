@@ -133,10 +133,35 @@ static Instruction make_instr(Opcode op, Operand o1, Operand o2)
 /* Parser context                                                      */
 /* ------------------------------------------------------------------ */
 
+/* Use directive: use <module_path> [as [<alias> | { function f1; ... }]]; */
+#define USE_MAX 32
+#define USE_SIG_MAX 32
+#define USE_PATH_MAX 512
+#define USE_SIG_NAME_MAX 128
+
 typedef struct {
-    Scanner       scanner;
-    CompileResult *result;
-    const char   *source;
+    char name[USE_SIG_NAME_MAX];  /* function or procedure name */
+    int  is_function;             /* 1 = function, 0 = procedure */
+} UseSignature;
+
+typedef struct {
+    char         module_path[USE_PATH_MAX];  /* raw module path, e.g. "modularity\module1" */
+    char         alias[USE_SIG_NAME_MAX];    /* alias (last segment of path if unset) */
+    UseSignature sigs[USE_SIG_MAX];          /* explicit imports (empty = import all) */
+    int          sig_count;                  /* number of explicit signatures */
+    int          has_as_block;               /* 1 if "as { ... }" form */
+} UseDirective;
+
+typedef struct {
+    UseDirective items[USE_MAX];
+    int          count;
+} UseDirectiveSet;
+
+typedef struct {
+    Scanner          scanner;
+    CompileResult   *result;
+    const char      *source;
+    UseDirectiveSet *uses;  /* if non-NULL, collect use directives */
 } Parser;
 
 static void set_error(Parser *p, const char *msg, int pos)
@@ -607,6 +632,7 @@ static int is_program_keyword(const char *val)
            str_eq_ci(val, "procedure") ||
            str_eq_ci(val, "function") ||
            str_eq_ci(val, "entrypoint") ||
+           str_eq_ci(val, "use") ||
            str_eq_ci(val, "asm");
 }
 
@@ -878,6 +904,198 @@ static int try_parse_system(Parser *p, ExecutableUnit *unit)
     return 1;
 }
 
+/* ------------------------------------------------------------------ */
+/* use directive parser                                                 */
+/* Mirrors Parser.cs TryParseUse()                                     */
+/* Syntax:                                                             */
+/*   use <module_path>;                                                */
+/*   use <module_path> as <alias>;                                     */
+/*   use <module_path> as { function f1(x, y); procedure p1(); };     */
+/* Path separators: ':' or '\' — all converted to '\' internally.     */
+/* ------------------------------------------------------------------ */
+static int try_parse_use(Parser *p, ExecutableUnit *unit)
+{
+    (void)unit; /* use directives do not modify the unit during parse */
+    Token cur = scanner_current(&p->scanner);
+    if (cur.kind != TOK_IDENTIFIER || !str_eq_ci(cur.value, "use"))
+        return 0;
+
+    scanner_scan(&p->scanner); /* consume 'use' */
+    skip_newlines(p);
+
+    /* Build module path from segments separated by ':', '\', or '/' */
+    char path[USE_PATH_MAX] = {0};
+    int  plen = 0;
+
+    cur = scanner_current(&p->scanner);
+    if (cur.kind != TOK_IDENTIFIER || str_eq_ci(cur.value, "as"))
+        return 0; /* nothing after 'use' */
+
+    /* First segment */
+    strncpy(path + plen, cur.value, USE_PATH_MAX - plen - 1);
+    plen += (int)strlen(cur.value);
+    scanner_scan(&p->scanner);
+    skip_newlines(p);
+
+    /* Continue while we see path separators */
+    while (1) {
+        cur = scanner_current(&p->scanner);
+        int is_sep = 0;
+        if (cur.kind == TOK_COLON)
+            is_sep = 1;
+        else if (cur.kind == TOK_IDENTIFIER &&
+                 (strcmp(cur.value, "\\") == 0 || strcmp(cur.value, "/") == 0))
+            is_sep = 1;
+        if (!is_sep)
+            break;
+
+        scanner_scan(&p->scanner); /* consume separator */
+        skip_newlines(p);
+        cur = scanner_current(&p->scanner);
+        if (cur.kind != TOK_IDENTIFIER || str_eq_ci(cur.value, "as"))
+            break;
+
+        if (plen + 1 < USE_PATH_MAX - 1) {
+            path[plen++] = '\\';
+            strncpy(path + plen, cur.value, USE_PATH_MAX - plen - 1);
+            plen += (int)strlen(cur.value);
+        }
+        scanner_scan(&p->scanner);
+        skip_newlines(p);
+    }
+
+    /* Consume optional semicolons before 'as' */
+    while (scanner_current(&p->scanner).kind == TOK_SEMICOLON)
+        scanner_scan(&p->scanner);
+    skip_newlines(p);
+
+    /* If we have a use directive set, record it */
+    if (p->uses && p->uses->count < USE_MAX) {
+        UseDirective *ud = &p->uses->items[p->uses->count];
+        memset(ud, 0, sizeof(*ud));
+        strncpy(ud->module_path, path, USE_PATH_MAX - 1);
+
+        /* Derive default alias: last segment of path */
+        const char *last_sep = strrchr(path, '\\');
+        const char *alias_start = last_sep ? last_sep + 1 : path;
+        strncpy(ud->alias, alias_start, USE_SIG_NAME_MAX - 1);
+
+        cur = scanner_current(&p->scanner);
+        if (cur.kind == TOK_IDENTIFIER && str_eq_ci(cur.value, "as")) {
+            scanner_scan(&p->scanner); /* consume 'as' */
+            skip_newlines(p);
+            cur = scanner_current(&p->scanner);
+
+            if (cur.kind == TOK_LBRACE) {
+                /* use <path> as { function f1(x,y); ... }; */
+                ud->has_as_block = 1;
+                scanner_scan(&p->scanner); /* consume '{' */
+                skip_newlines(p);
+
+                while (scanner_current(&p->scanner).kind != TOK_RBRACE &&
+                       scanner_current(&p->scanner).kind != TOK_EOF) {
+                    skip_newlines(p);
+                    while (scanner_current(&p->scanner).kind == TOK_SEMICOLON)
+                        scanner_scan(&p->scanner);
+                    skip_newlines(p);
+
+                    if (scanner_current(&p->scanner).kind == TOK_RBRACE)
+                        break;
+
+                    Token kind_tok = scanner_current(&p->scanner);
+                    if (kind_tok.kind != TOK_IDENTIFIER) {
+                        scanner_scan(&p->scanner); /* skip unknown token */
+                        continue;
+                    }
+                    int is_fn = str_eq_ci(kind_tok.value, "function");
+                    int is_pr = str_eq_ci(kind_tok.value, "procedure");
+                    if (!is_fn && !is_pr) {
+                        /* unknown keyword in as-block, skip line */
+                        while (scanner_current(&p->scanner).kind != TOK_SEMICOLON &&
+                               scanner_current(&p->scanner).kind != TOK_NEWLINE &&
+                               scanner_current(&p->scanner).kind != TOK_RBRACE &&
+                               scanner_current(&p->scanner).kind != TOK_EOF)
+                            scanner_scan(&p->scanner);
+                        continue;
+                    }
+                    scanner_scan(&p->scanner); /* consume 'function'/'procedure' */
+
+                    Token name_tok = scanner_current(&p->scanner);
+                    if (name_tok.kind != TOK_IDENTIFIER) continue;
+                    scanner_scan(&p->scanner); /* consume name */
+
+                    /* Skip parameter list (...) */
+                    if (scanner_current(&p->scanner).kind == TOK_LPAREN) {
+                        int depth = 1;
+                        scanner_scan(&p->scanner); /* consume '(' */
+                        while (depth > 0 && scanner_current(&p->scanner).kind != TOK_EOF) {
+                            Token t = scanner_scan(&p->scanner);
+                            if (t.kind == TOK_LPAREN) depth++;
+                            else if (t.kind == TOK_RPAREN) depth--;
+                        }
+                    }
+
+                    while (scanner_current(&p->scanner).kind == TOK_SEMICOLON)
+                        scanner_scan(&p->scanner);
+
+                    if (ud->sig_count < USE_SIG_MAX) {
+                        UseSignature *sig = &ud->sigs[ud->sig_count++];
+                        strncpy(sig->name, name_tok.value, USE_SIG_NAME_MAX - 1);
+                        sig->is_function = is_fn;
+                    }
+                }
+                /* consume '}' */
+                if (scanner_current(&p->scanner).kind == TOK_RBRACE)
+                    scanner_scan(&p->scanner);
+            } else if (cur.kind == TOK_IDENTIFIER) {
+                /* use <path> as <alias>; */
+                strncpy(ud->alias, cur.value, USE_SIG_NAME_MAX - 1);
+                scanner_scan(&p->scanner);
+            }
+        }
+
+        p->uses->count++;
+    } else {
+        /* No use set, or too many uses — just consume 'as' block if present */
+        cur = scanner_current(&p->scanner);
+        if (cur.kind == TOK_IDENTIFIER && str_eq_ci(cur.value, "as")) {
+            scanner_scan(&p->scanner);
+            skip_newlines(p);
+            if (scanner_current(&p->scanner).kind == TOK_LBRACE) {
+                int depth = 1;
+                scanner_scan(&p->scanner);
+                while (depth > 0 && scanner_current(&p->scanner).kind != TOK_EOF) {
+                    Token t = scanner_scan(&p->scanner);
+                    if (t.kind == TOK_LBRACE) depth++;
+                    else if (t.kind == TOK_RBRACE) depth--;
+                }
+            } else if (scanner_current(&p->scanner).kind == TOK_IDENTIFIER) {
+                scanner_scan(&p->scanner); /* alias */
+            }
+        }
+    }
+
+    skip_newlines(p);
+    while (scanner_current(&p->scanner).kind == TOK_SEMICOLON)
+        scanner_scan(&p->scanner);
+    skip_newlines(p);
+    return 1;
+}
+
+/* Skip optional parameter list "(param1, param2, ...)" after function/procedure name */
+static void skip_param_list(Parser *p)
+{
+    if (scanner_current(&p->scanner).kind != TOK_LPAREN)
+        return;
+    int depth = 1;
+    scanner_scan(&p->scanner); /* consume '(' */
+    while (depth > 0 && scanner_current(&p->scanner).kind != TOK_EOF) {
+        Token t = scanner_scan(&p->scanner);
+        if (t.kind == TOK_LPAREN)       depth++;
+        else if (t.kind == TOK_RPAREN)  depth--;
+    }
+}
+
 static int try_parse_procedure(Parser *p, ExecutableUnit *unit)
 {
     Token cur = scanner_current(&p->scanner);
@@ -886,6 +1104,7 @@ static int try_parse_procedure(Parser *p, ExecutableUnit *unit)
     scanner_scan(&p->scanner);
     Token name_tok = expect_token(p, TOK_IDENTIFIER);
     if (!p->result->success) return 0;
+    skip_param_list(p); /* skip optional "(param1, ...)" */
     skip_newlines(p);
 
     if (unit->proc_count >= MAX_PROCS) {
@@ -913,6 +1132,7 @@ static int try_parse_function(Parser *p, ExecutableUnit *unit)
     scanner_scan(&p->scanner);
     Token name_tok = expect_token(p, TOK_IDENTIFIER);
     if (!p->result->success) return 0;
+    skip_param_list(p); /* skip optional "(param1, ...)" */
     skip_newlines(p);
 
     if (unit->func_count >= MAX_PROCS) {
@@ -1023,38 +1243,27 @@ static void consume_line(Parser *p)
 /* Main compilation entry point                                        */
 /* ------------------------------------------------------------------ */
 
-int magic_compile_source(const char *source, CompileResult *out)
+/* Internal compile: like magic_compile_source but also collects use directives */
+static int compile_source_internal(const char *source, CompileResult *out, UseDirectiveSet *uses)
 {
-#if defined(MAGIC_KERNEL_DIAG)
-    magic_compile_diag("magic_compile_source: memset out");
-#endif
     memset(out, 0, sizeof(*out));
     out->success = 1;
 
-    /* Init executable unit */
     ExecutableUnit *unit = &out->unit;
-#if defined(MAGIC_KERNEL_DIAG)
-    magic_compile_diag("magic_compile_source: memset unit");
-#endif
     memset(unit, 0, sizeof(*unit));
     block_init(&unit->entry_point);
 
     if (!source || !*source) {
-        return 1; /* empty source is valid */
+        return 1;
     }
 
     Parser p;
     memset(&p, 0, sizeof(p));
     p.result = out;
     p.source = source;
-#if defined(MAGIC_KERNEL_DIAG)
-    magic_compile_diag("magic_compile_source: before scanner_init");
-#endif
+    p.uses   = uses;
+
     scanner_init(&p.scanner, source);
-#if defined(MAGIC_KERNEL_DIAG)
-    magic_compile_diag_i2("magic_compile_source: after scanner_init",
-                          p.scanner.tok_count, p.scanner.tok_cap);
-#endif
 
     int is_structured = 0;
     int unprocessed_lines = 0;
@@ -1069,6 +1278,7 @@ int magic_compile_source(const char *source, CompileResult *out)
         if (try_parse_program(&p, unit))       { is_structured = 1; continue; }
         if (try_parse_module(&p, unit))        { is_structured = 1; continue; }
         if (try_parse_system(&p, unit))        { is_structured = 1; continue; }
+        if (try_parse_use(&p, unit))           { is_structured = 1; continue; }
         if (try_parse_procedure(&p, unit))     { is_structured = 1; continue; }
         if (try_parse_function(&p, unit))      { is_structured = 1; continue; }
         if (try_parse_entrypoint(&p, unit))    { is_structured = 1; continue; }
@@ -1105,6 +1315,248 @@ int magic_compile_source(const char *source, CompileResult *out)
 
     scanner_free(&p.scanner);
     return out->success;
+}
+
+/* Public compile-from-source (no use-directive linking) */
+int magic_compile_source(const char *source, CompileResult *out)
+{
+    return compile_source_internal(source, out, NULL);
+}
+
+/* Forward declaration (defined in File I/O section below) */
+static char *read_file(const char *path, long *out_size);
+
+/* ------------------------------------------------------------------ */
+/* Linker: resolve 'use' directives and merge imported functions       */
+/* Mirrors Magic_Kernel_Dotnet/Magic.Kernel/Compilation/Linker.cs     */
+/* ------------------------------------------------------------------ */
+
+/* Build the file path for a module given the importing file's directory
+   and the module path (e.g. "modularity\module1").
+   Tries <dir>/<module_path>.agi and <dir>/<last_segment>.agi. */
+static int resolve_module_path(const char *importer_path,
+                               const char *module_path,
+                               char *out, int outlen)
+{
+    /* Get directory of the importer file */
+    char dir[USE_PATH_MAX] = {0};
+    const char *last_slash = NULL;
+    {
+        const char *p2 = importer_path;
+        while (*p2) {
+            if (*p2 == '/' || *p2 == '\\') last_slash = p2;
+            p2++;
+        }
+    }
+    if (last_slash) {
+        int dlen = (int)(last_slash - importer_path);
+        if (dlen >= USE_PATH_MAX) dlen = USE_PATH_MAX - 1;
+        strncpy(dir, importer_path, dlen);
+        dir[dlen] = '\0';
+    } else {
+        dir[0] = '.'; dir[1] = '\0';
+    }
+
+    /* Convert backslashes in module_path to OS separator, try full path first */
+    char mp_norm[USE_PATH_MAX] = {0};
+    int mlen = (int)strlen(module_path);
+    for (int i = 0; i < mlen && i < USE_PATH_MAX - 1; i++)
+        mp_norm[i] = (module_path[i] == '\\') ? '/' : module_path[i];
+
+    /* Try <dir>/<normalized_module_path>.agi */
+    snprintf(out, outlen, "%s/%s.agi", dir, mp_norm);
+    {
+        FILE *f = fopen(out, "rb");
+        if (f) { fclose(f); return 1; }
+    }
+
+    /* Try <dir>/<last_segment>.agi */
+    const char *last_seg = strrchr(mp_norm, '/');
+    if (last_seg) last_seg++;
+    else          last_seg = mp_norm;
+    snprintf(out, outlen, "%s/%s.agi", dir, last_seg);
+    {
+        FILE *f = fopen(out, "rb");
+        if (f) { fclose(f); return 1; }
+    }
+
+    return 0; /* not found */
+}
+
+/* Copy a function/procedure from src into dst with a qualified name.
+   qualified_name is the new name to use (e.g. "module1:add"). */
+static int merge_function(ExecutableUnit *dst, const Procedure *src,
+                          const char *qualified_name, int is_function)
+{
+    Procedure *arr = is_function ? dst->functions : dst->procedures;
+    int *count     = is_function ? &dst->func_count : &dst->proc_count;
+
+    if (*count >= MAX_PROCS)
+        return 0;
+
+    Procedure *dest = &arr[*count];
+    strncpy(dest->name, qualified_name, PROC_NAME_MAX - 1);
+    dest->name[PROC_NAME_MAX - 1] = '\0';
+
+    /* Deep-copy the block */
+    block_init(&dest->body);
+    for (int i = 0; i < src->body.count; i++) {
+        if (!block_add(&dest->body, src->body.instrs[i]))
+            return 0;
+    }
+    (*count)++;
+    return 1;
+}
+
+/* Rewrite CALL operands in a block: replace short name with qualified name.
+   E.g., call "add" -> call "module1:add" */
+static void rewrite_calls_in_block(Block *b, const char *short_name,
+                                   const char *qualified_name)
+{
+    for (int i = 0; i < b->count; i++) {
+        Instruction *ins = &b->instrs[i];
+        if ((ins->opcode == OP_CALL || ins->opcode == OP_ACALL) &&
+            ins->op1.kind == OPERAND_CALL_INFO &&
+            strcmp(ins->op1.str_val, short_name) == 0)
+        {
+            strncpy(ins->op1.str_val, qualified_name, OPERAND_STR_MAX - 1);
+            ins->op1.str_val[OPERAND_STR_MAX - 1] = '\0';
+        }
+    }
+}
+
+/* Rewrite all call sites in a unit (all procedures, functions, entrypoint) */
+static void rewrite_calls_in_unit(ExecutableUnit *unit,
+                                  const char *short_name,
+                                  const char *qualified_name)
+{
+    for (int i = 0; i < unit->proc_count; i++)
+        rewrite_calls_in_block(&unit->procedures[i].body, short_name, qualified_name);
+    for (int i = 0; i < unit->func_count; i++)
+        rewrite_calls_in_block(&unit->functions[i].body, short_name, qualified_name);
+    rewrite_calls_in_block(&unit->entry_point, short_name, qualified_name);
+}
+
+/* Link a compiled unit against its use directives.
+   importer_path: filesystem path of the file that was compiled into *main_out */
+int magic_link_file(const char *importer_path, CompileResult *main_out)
+{
+    if (!main_out->success)
+        return 0;
+
+    /* Re-parse use directives from the source file */
+    char *src = NULL;
+    {
+        long sz;
+        src = read_file(importer_path, &sz);
+        if (!src) return 1; /* no source — nothing to link */
+    }
+
+    UseDirectiveSet uses;
+    memset(&uses, 0, sizeof(uses));
+
+    CompileResult tmp;
+    compile_source_internal(src, &tmp, &uses);
+    free(src);
+
+    if (!tmp.success || uses.count == 0)
+        return main_out->success;
+
+    ExecutableUnit *main_unit = &main_out->unit;
+
+    for (int u = 0; u < uses.count; u++) {
+        UseDirective *ud = &uses.items[u];
+
+        /* Resolve module file path */
+        char mod_path[USE_PATH_MAX] = {0};
+        if (!resolve_module_path(importer_path, ud->module_path,
+                                 mod_path, USE_PATH_MAX)) {
+            /* Module not found — emit warning but keep going */
+            fprintf(stderr, "warning: module '%s' not found (skipping)\n",
+                    ud->module_path);
+            continue;
+        }
+
+        /* Compile the module */
+        char *mod_src = NULL;
+        {
+            long sz2;
+            mod_src = read_file(mod_path, &sz2);
+        }
+        if (!mod_src) {
+            fprintf(stderr, "warning: cannot read module '%s' (skipping)\n",
+                    mod_path);
+            continue;
+        }
+
+        CompileResult mod_res;
+        compile_source_internal(mod_src, &mod_res, NULL);
+        free(mod_src);
+
+        if (!mod_res.success) {
+            fprintf(stderr, "warning: module '%s' compile error: %s (skipping)\n",
+                    mod_path, mod_res.error);
+            continue;
+        }
+
+        ExecutableUnit *mod_unit = &mod_res.unit;
+
+        /* Derive the prefix to use for qualified names.
+           Use the last segment of the module path (i.e. module file name). */
+        char prefix[USE_SIG_NAME_MAX] = {0};
+        const char *last_seg = strrchr(ud->module_path, '\\');
+        if (last_seg) last_seg++;
+        else          last_seg = ud->module_path;
+        strncpy(prefix, last_seg, USE_SIG_NAME_MAX - 1);
+
+        /* If the use directive has explicit signatures, import only those */
+        if (ud->has_as_block && ud->sig_count > 0) {
+            for (int s = 0; s < ud->sig_count; s++) {
+                UseSignature *sig = &ud->sigs[s];
+                char qual_name[PROC_NAME_MAX];
+                snprintf(qual_name, sizeof(qual_name), "%s:%s", prefix, sig->name);
+
+                /* Find matching function/procedure in module */
+                if (sig->is_function) {
+                    for (int f = 0; f < mod_unit->func_count; f++) {
+                        if (str_eq_ci(mod_unit->functions[f].name, sig->name)) {
+                            merge_function(main_unit, &mod_unit->functions[f],
+                                           qual_name, 1);
+                            rewrite_calls_in_unit(main_unit, sig->name, qual_name);
+                            break;
+                        }
+                    }
+                } else {
+                    for (int pr = 0; pr < mod_unit->proc_count; pr++) {
+                        if (str_eq_ci(mod_unit->procedures[pr].name, sig->name)) {
+                            merge_function(main_unit, &mod_unit->procedures[pr],
+                                           qual_name, 0);
+                            rewrite_calls_in_unit(main_unit, sig->name, qual_name);
+                            break;
+                        }
+                    }
+                }
+            }
+        } else {
+            /* Import all functions and procedures from the module */
+            for (int f = 0; f < mod_unit->func_count; f++) {
+                char qual_name[PROC_NAME_MAX];
+                snprintf(qual_name, sizeof(qual_name), "%s:%s",
+                         prefix, mod_unit->functions[f].name);
+                merge_function(main_unit, &mod_unit->functions[f], qual_name, 1);
+                rewrite_calls_in_unit(main_unit, mod_unit->functions[f].name, qual_name);
+            }
+            for (int pr = 0; pr < mod_unit->proc_count; pr++) {
+                char qual_name[PROC_NAME_MAX];
+                snprintf(qual_name, sizeof(qual_name), "%s:%s",
+                         prefix, mod_unit->procedures[pr].name);
+                merge_function(main_unit, &mod_unit->procedures[pr], qual_name, 0);
+                rewrite_calls_in_unit(main_unit, mod_unit->procedures[pr].name, qual_name);
+            }
+        }
+    }
+
+    return main_out->success;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1162,13 +1614,22 @@ int magic_compile_file(const char *path, CompileResult *out)
         return 0;
     }
 #if defined(MAGIC_KERNEL_DIAG)
-    magic_compile_diag("magic_compile_file: calling magic_compile_source");
+    magic_compile_diag("magic_compile_file: calling compile_source_internal");
 #endif
-    int result = magic_compile_source(src, out);
+    UseDirectiveSet uses;
+    memset(&uses, 0, sizeof(uses));
+    int result = compile_source_internal(src, out, &uses);
+    free(src);
 #if defined(MAGIC_KERNEL_DIAG)
     magic_compile_diag_i2("magic_compile_file: source done", result, out->success);
 #endif
-    free(src);
+    /* Link use directives if compilation succeeded and uses were found */
+    if (result && out->success && uses.count > 0) {
+#if defined(MAGIC_KERNEL_DIAG)
+        magic_compile_diag("magic_compile_file: linking");
+#endif
+        result = magic_link_file(path, out);
+    }
     return result;
 }
 

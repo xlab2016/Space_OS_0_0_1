@@ -318,6 +318,7 @@ void    scanner_restore(Scanner *s, int pos);
 /* Compiler */
 int     magic_compile_source(const char *source, CompileResult *out);
 int     magic_compile_file(const char *path, CompileResult *out);
+int     magic_link_file(const char *importer_path, CompileResult *main_out);
 
 /* Serialization */
 int     magic_save_agic(const ExecutableUnit *unit, const char *path);

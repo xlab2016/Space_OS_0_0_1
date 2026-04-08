@@ -1,0 +1,37 @@
+@AGI 0.0.1;
+
+program module1;
+system samples;
+module modularity;
+
+function add(x, y) {
+	return x + y;
+}
+
+function sub(x, y) {
+	return x - y;
+}
+
+function mul(x, y) {
+	return x * y;
+}
+
+function div(x, y) {
+	return float<decimal>: x / y;
+}
+
+function calculate(x, y) {
+	function add(x, y) {
+		return x + y;
+	}
+
+	function mul(x, y) {
+		return x * y;
+	}
+
+	function pow(x, y) {
+		return x ^ y;
+	}
+
+	return add(x, y) + mul(x, y) + pow(x, y);
+}

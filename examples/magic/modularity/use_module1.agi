@@ -1,0 +1,74 @@
+@AGI 0.0.1;
+
+program use_module1;
+system samples;
+module modularity;
+
+use modularity: module1 as {
+	function add(x, y);
+	function sub(x, y);
+	function mul(x, y);
+	function div(x, y);
+	function calculate(x, y);
+};
+
+use module2;
+
+procedure Main() {
+	procedure debug() {
+		var e1:= execution;
+		var objects:= e1.objects;
+
+		println("Objects graph start: ");
+
+		for (var i:= 0; i < length(objects); i++) {
+			println(#"Object: {objects[i]}");
+		}
+
+		println("Objects graph end.");
+	}
+
+	println("Enter x, y: ");
+	println("Enter x: ");
+	var x:= 1;
+	println("Enter y: ");
+	var y:= 3;
+
+	var z:= calculate(x, y) + calculate.add(x, y);
+
+	println(#"Result z: {z}");
+
+	var p := Point(1, 2);
+	p.Print();
+	p.Add(Point(X: 1, Y: 4));
+	p.Print();
+
+	var world:= Room(
+		Board: Board(
+			Surface: Point[],
+			Shapes: Shape[]
+		),
+		Persons: Person[]
+	);
+
+	debug();
+
+	var me:= Person(Name: "Person1");
+	world.Persons += me;
+	var board := world.Board;
+	board.Draw(Circle(Origin: Point(X: 1, Y: 2), Radius: 3));
+	board.Draw(Square(Origin: Point(X: 3, Y: 4), W: 2, H: 4));
+
+	me.Say("This is basic shapes");
+
+	var student1 := Person( Name: "Student1" );
+	world.Persons += student1;
+
+	student1.Say("Cool");
+
+	debug();
+}
+
+entrypoint {
+	Main;
+}
