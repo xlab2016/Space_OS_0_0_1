@@ -1,0 +1,76 @@
+@ AGI 1.0
+program Arithmetic
+module Examples
+system Space
+
+// Demonstrates arithmetic opcodes: add, sub, mul, div, pow
+// and comparison opcodes: equals, lt, not
+
+entrypoint
+{
+  asm {
+    // Addition: 10 + 5 = 15
+    push 10
+    push 5
+    add
+    push 1
+    call print
+
+    // Subtraction: 10 - 3 = 7
+    push 10
+    push 3
+    sub
+    push 1
+    call print
+
+    // Multiplication: 4 * 3 = 12
+    push 4
+    push 3
+    mul
+    push 1
+    call print
+
+    // Integer Division: 15 / 4 = 3
+    push 15
+    push 4
+    div
+    push 1
+    call print
+
+    // Power: 2 ^ 8 = 256
+    push 2
+    push 8
+    pow
+    push 1
+    call print
+
+    // String concatenation via add: "Hello, " + "World" = "Hello, World"
+    push string: "Hello, "
+    push string: "World"
+    add
+    push 1
+    call print
+
+    // Equality: 5 == 5 → true
+    push 5
+    push 5
+    equals
+    push 1
+    call print
+
+    // Less-than: 3 < 7 → true
+    push 3
+    push 7
+    lt
+    push 1
+    call print
+
+    // Not: !true → false
+    push 1
+    not
+    push 1
+    call print
+
+    ret
+  }
+}

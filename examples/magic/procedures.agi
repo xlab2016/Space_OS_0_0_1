@@ -1,0 +1,80 @@
+@ AGI 1.0
+program Procedures
+module Examples
+system Space
+
+// Demonstrates procedures and functions with local memory and arithmetic
+
+procedure print_separator
+{
+  asm {
+    push string: "---"
+    push 1
+    call print
+    ret
+  }
+}
+
+function multiply
+{
+  asm {
+    // a=[0], b=[1] (passed via global memory slots)
+    push [0]
+    push [1]
+    mul
+    ret
+  }
+}
+
+entrypoint
+{
+  asm {
+    call print_separator
+
+    // multiply(6, 7) = 42
+    push 6
+    pop [0]
+    push 7
+    pop [1]
+    call multiply
+    push 1
+    call print
+
+    call print_separator
+
+    // Simple counter loop: sum 1+2+3+4+5 = 15
+    push 0
+    pop [2]
+    push 1
+    pop [3]
+
+    label sum_loop
+    // if counter > 5, exit
+    push 5
+    push [3]
+    lt
+    je sum_done
+
+    // sum += counter
+    push [2]
+    push [3]
+    add
+    pop [2]
+
+    // counter += 1
+    push [3]
+    push 1
+    add
+    pop [3]
+
+    jmp sum_loop
+
+    label sum_done
+    push [2]
+    push 1
+    call print
+
+    call print_separator
+    ret
+  }
+}

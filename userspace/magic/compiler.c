@@ -374,6 +374,90 @@ static int parse_asm_instruction(const char *text, Instruction *out)
         }
         op1 = op_str(data_buf);
     }
+    else if (strcmp(op_lower, "move") == 0) {
+        /* move [dst], [src] or move [dst], value */
+        opcode = OP_MOVE;
+        Token cur = scanner_current(&s);
+        if (cur.kind == TOK_LBRACKET) {
+            parse_memory_operand(&s, &op1, 0);
+            skip_commas(&s);
+            cur = scanner_current(&s);
+            if (cur.kind == TOK_LBRACKET) {
+                parse_memory_operand(&s, &op2, 0);
+            } else if (cur.kind == TOK_NUMBER) {
+                Token t = scanner_scan(&s);
+                op2 = op_int(atol(t.value));
+            } else if (cur.kind == TOK_STRING || cur.kind == TOK_IDENTIFIER) {
+                Token t = scanner_scan(&s);
+                op2 = op_str(t.value);
+            }
+        }
+    }
+    else if (strcmp(op_lower, "getvertex") == 0) {
+        opcode = OP_GETVERTEX;
+        Token cur = scanner_current(&s);
+        if (cur.kind == TOK_NUMBER) {
+            Token t = scanner_scan(&s);
+            op1 = op_int(atol(t.value));
+        } else if (cur.kind == TOK_STRING || cur.kind == TOK_IDENTIFIER) {
+            Token t = scanner_scan(&s);
+            op1 = op_str(t.value);
+        }
+    }
+    else if (strcmp(op_lower, "acall") == 0) {
+        opcode = OP_ACALL;
+        Token cur = scanner_current(&s);
+        if (cur.kind == TOK_STRING || cur.kind == TOK_IDENTIFIER) {
+            Token t = scanner_scan(&s);
+            op1 = op_call(t.value);
+        }
+    }
+    else if (strcmp(op_lower, "expr") == 0) {
+        opcode = OP_EXPR;
+        Token cur = scanner_current(&s);
+        if (cur.kind == TOK_NUMBER) {
+            Token t = scanner_scan(&s);
+            op1 = op_int(atol(t.value));
+        }
+    }
+    else if (strcmp(op_lower, "defexpr") == 0) {
+        opcode = OP_DEFEXPR;
+    }
+    else if (strcmp(op_lower, "lambda") == 0) {
+        opcode = OP_LAMBDA;
+    }
+    else if (strcmp(op_lower, "equals") == 0) {
+        opcode = OP_EQUALS;
+    }
+    else if (strcmp(op_lower, "not") == 0) {
+        opcode = OP_NOT;
+    }
+    else if (strcmp(op_lower, "lt") == 0) {
+        opcode = OP_LT;
+    }
+    else if (strcmp(op_lower, "add") == 0) {
+        opcode = OP_ADD;
+    }
+    else if (strcmp(op_lower, "sub") == 0) {
+        opcode = OP_SUB;
+    }
+    else if (strcmp(op_lower, "mul") == 0) {
+        opcode = OP_MUL;
+    }
+    else if (strcmp(op_lower, "div") == 0) {
+        opcode = OP_DIV;
+    }
+    else if (strcmp(op_lower, "pow") == 0) {
+        opcode = OP_POW;
+    }
+    else if (strcmp(op_lower, "defobj") == 0) {
+        opcode = OP_DEFOBJ;
+        Token cur = scanner_current(&s);
+        if (cur.kind == TOK_STRING || cur.kind == TOK_IDENTIFIER) {
+            Token t = scanner_scan(&s);
+            op1 = op_type(t.value);
+        }
+    }
     else {
         /* Unknown opcode: treat as NOP */
         opcode = OP_NOP;
@@ -420,9 +504,11 @@ static int lower_statement(LoweringCtx *ctx, const char *stmt)
     /* Check if it looks like an ASM opcode */
     static const char *asm_opcodes[] = {
         "nop", "push", "pop", "call", "ret", "syscall",
-        "def", "defgen", "callobj", "awaitobj", "await",
+        "def", "defgen", "defobj", "callobj", "awaitobj", "await",
         "streamwaitobj", "streamwait", "label", "cmp", "je", "jmp",
         "getobj", "setobj", "addvertex", "addrelation", "addshape",
+        "move", "getvertex", "acall", "expr", "defexpr", "lambda",
+        "equals", "not", "lt", "add", "sub", "mul", "div", "pow",
         NULL
     };
 
@@ -498,9 +584,11 @@ static int is_asm_opcode(const char *val)
 {
     static const char *ops[] = {
         "addvertex", "addrelation", "addshape", "call", "pop", "push",
-        "nop", "def", "defgen", "callobj", "awaitobj", "streamwaitobj",
+        "nop", "def", "defgen", "defobj", "callobj", "awaitobj", "streamwaitobj",
         "await", "label", "cmp", "je", "jmp", "getobj", "setobj",
-        "streamwait", "ret", "syscall", NULL
+        "streamwait", "ret", "syscall", "move", "getvertex", "acall",
+        "expr", "defexpr", "lambda", "equals", "not", "lt",
+        "add", "sub", "mul", "div", "pow", NULL
     };
     char low[64];
     str_lower(low, val, sizeof(low));
@@ -1092,11 +1180,16 @@ static const char *opcode_name(Opcode op)
 {
     switch (op) {
         case OP_NOP:          return "nop";
+        case OP_ADDVERTEX:    return "addvertex";
+        case OP_ADDRELATION:  return "addrelation";
+        case OP_ADDSHAPE:     return "addshape";
+        case OP_CALL:         return "call";
         case OP_PUSH:         return "push";
         case OP_POP:          return "pop";
-        case OP_CALL:         return "call";
-        case OP_RET:          return "ret";
         case OP_SYSCALL:      return "syscall";
+        case OP_RET:          return "ret";
+        case OP_MOVE:         return "move";
+        case OP_GETVERTEX:    return "getvertex";
         case OP_DEF:          return "def";
         case OP_DEFGEN:       return "defgen";
         case OP_CALLOBJ:      return "callobj";
@@ -1110,9 +1203,19 @@ static const char *opcode_name(Opcode op)
         case OP_GETOBJ:       return "getobj";
         case OP_SETOBJ:       return "setobj";
         case OP_STREAMWAIT:   return "streamwait";
-        case OP_ADDVERTEX:    return "addvertex";
-        case OP_ADDRELATION:  return "addrelation";
-        case OP_ADDSHAPE:     return "addshape";
+        case OP_ACALL:        return "acall";
+        case OP_EXPR:         return "expr";
+        case OP_DEFEXPR:      return "defexpr";
+        case OP_LAMBDA:       return "lambda";
+        case OP_EQUALS:       return "equals";
+        case OP_NOT:          return "not";
+        case OP_LT:           return "lt";
+        case OP_ADD:          return "add";
+        case OP_SUB:          return "sub";
+        case OP_MUL:          return "mul";
+        case OP_DIV:          return "div";
+        case OP_POW:          return "pow";
+        case OP_DEFOBJ:       return "defobj";
         default:              return "nop";
     }
 }
