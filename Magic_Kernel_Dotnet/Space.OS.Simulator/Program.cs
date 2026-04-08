@@ -4,6 +4,7 @@ using Magic.Kernel.Build;
 using Magic.Kernel.Core;
 using Magic.Kernel.Core.OS;
 using Magic.Kernel.Runtime;
+using Magic.Kernel.Terminal.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using SpaceDb.Services;
@@ -15,30 +16,6 @@ static string? GetFirstNonOptionArg(string[] args)
         if (string.IsNullOrWhiteSpace(a)) continue;
         if (a.StartsWith("-", StringComparison.Ordinal)) continue;
         return a;
-    }
-    return null;
-}
-
-static string? GetOutputFormatFromArgs(string[] args)
-{
-    for (var i = 0; i < args.Length; i++)
-    {
-        var a = args[i];
-        if (string.Equals(a, "--output", StringComparison.OrdinalIgnoreCase) || string.Equals(a, "-o", StringComparison.OrdinalIgnoreCase))
-        {
-            if (i + 1 < args.Length)
-            {
-                var val = args[i + 1].Trim().ToLowerInvariant();
-                if (val is "agiasm" or "agic") return val;
-            }
-            return null;
-        }
-        if (a.StartsWith("--output=", StringComparison.OrdinalIgnoreCase))
-        {
-            var val = a.Substring(9).Trim().ToLowerInvariant();
-            if (val is "agiasm" or "agic") return val;
-            return null;
-        }
     }
     return null;
 }
@@ -61,7 +38,7 @@ var runFromConfig = executionUnits.Count > 0;
 if (!runFromConfig)
 {
     var debugEl2 = SpaceEnvironment.Configuration.TryGetValue("debug", out var debugEl) ? debugEl : default(System.Text.Json.JsonElement);
-    var debug = debugEl2.GetString();
+    var debug = debugEl2.ValueKind == System.Text.Json.JsonValueKind.String ? debugEl2.GetString() : null;
 
     filePath = GetFirstNonOptionArg(args);
     var isDebugMode = Debugger.IsAttached;
@@ -116,15 +93,16 @@ defaultDisk.Configuration.RelationSequenceIndex ??= GetLong(builder.Configuratio
 defaultDisk.Configuration.ShapeSequenceIndex ??= GetLong(builder.Configuration, "SpaceDisk:ShapeSequenceIndex") ?? 0;
 
 var execHost = new ExecutionUnitHost(kernel);
+var runService = new SimulatorRunService();
 bool success;
 
 if (runFromConfig)
 {
-    success = await RunUnitsFromConfigAsync(execHost, executionUnits);
+    success = await runService.RunUnitsFromConfigAsync(execHost, executionUnits);
 }
 else
 {
-    success = await RunSingleFileAsync(execHost, filePath!, args);
+    success = await runService.RunSingleFileAsync(execHost, filePath!, args);
 }
 
 if (!success)
@@ -136,116 +114,3 @@ if (!success)
 
 Console.WriteLine("OK");
 Console.ReadLine();
-
-static async Task<bool> RunSingleFileAsync(ExecutionUnitHost execHost, string filePath, string[] args)
-{
-    var artifact = new Artifact
-    {
-        Name = Path.GetFileNameWithoutExtension(filePath) ?? string.Empty,
-        Namespace = string.Empty
-    };
-
-    var extension = Path.GetExtension(filePath).ToLowerInvariant();
-    var runCommand = new RunCommand { Type = RunType.NewThread };
-
-    if (extension == ".agic" || extension == ".agiasm")
-    {
-        if (extension == ".agic")
-        {
-            artifact.Type = ArtifactType.Agic;
-            artifact.Body = filePath;
-        }
-        else
-        {
-            artifact.Type = ArtifactType.AgiAsm;
-            artifact.Body = await File.ReadAllTextAsync(filePath);
-        }
-
-        execHost.UnitArtifact = artifact;
-        return await execHost.RunAsync(runCommand);
-    }
-
-    if (extension == ".agi")
-    {
-        var source = await File.ReadAllTextAsync(filePath);
-        artifact.Type = ArtifactType.Agi;
-        artifact.Body = source;
-
-        runCommand.OutputFormat = GetOutputFormatFromArgs(args) ?? "agiasm";
-        runCommand.SourcePath = filePath;
-
-        execHost.UnitArtifact = artifact;
-        return await execHost.RunAsync(runCommand);
-    }
-
-    Console.Error.WriteLine($"Unsupported file extension: {extension}. Expected .agi, .agic or .agiasm");
-    Environment.ExitCode = 2;
-    return false;
-}
-
-static async Task<bool> RunUnitsFromConfigAsync(ExecutionUnitHost execHost, IReadOnlyList<SpaceEnvironment.ExecutionUnitConfig> executionUnits)
-{
-    var results = new List<bool>();
-
-    foreach (var unit in executionUnits)
-    {
-        var fullPath = SpaceEnvironment.GetFilePath(unit.Path);
-
-        if (!File.Exists(fullPath))
-        {
-            Console.Error.WriteLine($"Configured executionUnit file not found: {Path.GetFullPath(fullPath)}");
-            results.Add(false);
-            continue;
-        }
-
-        var artifact = new Artifact
-        {
-            Name = Path.GetFileNameWithoutExtension(fullPath) ?? string.Empty,
-            Namespace = string.Empty
-        };
-
-        var extension = Path.GetExtension(fullPath).ToLowerInvariant();
-
-        if (extension == ".agic" || extension == ".agiasm")
-        {
-            if (extension == ".agic")
-            {
-                artifact.Type = ArtifactType.Agic;
-                artifact.Body = fullPath;
-            }
-            else
-            {
-                artifact.Type = ArtifactType.AgiAsm;
-                artifact.Body = await File.ReadAllTextAsync(fullPath);
-            }
-
-            execHost.UnitArtifact = artifact;
-
-            var cmd = new RunCommand { Type = RunType.NewThread, InstanceCount = unit.InstanceCount };
-            var ok = await execHost.RunAllInstancesAsync(cmd);
-            results.Add(ok);
-
-            continue;
-        }
-
-        if (extension == ".agi")
-        {
-            var source = await File.ReadAllTextAsync(fullPath);
-            artifact.Type = ArtifactType.Agi;
-            artifact.Body = source;
-
-            execHost.UnitArtifact = artifact;
-
-            var cmd = new RunCommand { Type = RunType.NewThread, InstanceCount = unit.InstanceCount };
-            var ok = await execHost.RunAllInstancesAsync(cmd);
-            results.Add(ok);
-
-            continue;
-        }
-
-        Console.Error.WriteLine($"Unsupported file extension in executionUnits config: {extension}. Expected .agi, .agic or .agiasm");
-        results.Add(false);
-    }
-
-    return results.Count > 0 && results.All(r => r);
-}

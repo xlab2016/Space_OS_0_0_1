@@ -27,6 +27,7 @@ namespace Magic.Kernel.Compilation
                     break;
 
                 case Opcodes.Call:
+                case Opcodes.ACall:
                     command.Operand1 = BuildCallInfo(parameters ?? new List<ParameterNode>());
                     break;
 
@@ -54,6 +55,10 @@ namespace Magic.Kernel.Compilation
                 case Opcodes.Push:
                     command.Operand1 = BuildPushOperand(parameters);
                     break;
+
+                case Opcodes.Lambda:
+                    command.Operand1 = BuildLambdaMetadata(parameters);
+                    break;
             }
 
             return command;
@@ -77,6 +82,11 @@ namespace Magic.Kernel.Compilation
         public Command EmitCall(List<ParameterNode> parameters)
         {
             return Emit(Opcodes.Call, parameters);
+        }
+
+        public Command EmitACall(List<ParameterNode> parameters)
+        {
+            return Emit(Opcodes.ACall, parameters);
         }
 
         public Command EmitCallObj(List<ParameterNode>? parameters)
@@ -290,6 +300,13 @@ namespace Magic.Kernel.Compilation
                         callInfo.FunctionName = nameParam.FunctionName;
                         break;
 
+                    case StreamWaitDeltaBindSlotsParameterNode swBind:
+                        callInfo.StreamWaitDeltaBindSlots = new[] { swBind.AggregateSlot, swBind.DeltaSlot };
+                        callInfo.StreamWaitCaptureToSlots = swBind.CaptureToSlots is { Length: > 0 }
+                            ? (long[])swBind.CaptureToSlots.Clone()
+                            : null;
+                        break;
+
                     case FunctionParameterNode funcParam:
                         var paramName = !string.IsNullOrWhiteSpace(funcParam.ParameterName) ? funcParam.ParameterName : funcParam.Name;
                         
@@ -316,6 +333,16 @@ namespace Magic.Kernel.Compilation
                     case StringParameterNode stringParam:
                         var stringParamName = !string.IsNullOrWhiteSpace(stringParam.Name) ? stringParam.Name : "path";
                         callParams[stringParamName] = stringParam.Value ?? string.Empty;
+                        break;
+
+                    case TypeLiteralParameterNode typeLiteralParam:
+                        var typeParamName = !string.IsNullOrWhiteSpace(typeLiteralParam.Name) ? typeLiteralParam.Name : "0";
+                        callParams[typeParamName] = typeLiteralParam.TypeName ?? string.Empty;
+                        break;
+
+                    case IndexParameterNode indexParam when indexParam.Name != "int":
+                        var indexParamName = !string.IsNullOrWhiteSpace(indexParam.Name) ? indexParam.Name : "0";
+                        callParams[indexParamName] = indexParam.Value;
                         break;
 
                     case ComplexValueParameterNode complexParam:
@@ -456,6 +483,7 @@ namespace Magic.Kernel.Compilation
                 if (param is MemoryParameterNode memoryParam)
                 {
                     memoryAddress.Index = memoryParam.Index;
+                    memoryAddress.LogicalIndex = memoryParam.LogicalIndex ?? memoryParam.Index;
                     memoryAddress.IsGlobal = string.Equals(memoryParam.Name, "global", StringComparison.OrdinalIgnoreCase);
                     break;
                 }
@@ -471,14 +499,37 @@ namespace Magic.Kernel.Compilation
 
             var p = parameters[0];
             if (p is MemoryParameterNode mem)
-                return new MemoryAddress { Index = mem.Index, IsGlobal = string.Equals(mem.Name, "global", StringComparison.OrdinalIgnoreCase) };
+                return new MemoryAddress
+                {
+                    Index = mem.Index,
+                    LogicalIndex = mem.LogicalIndex ?? mem.Index,
+                    IsGlobal = string.Equals(mem.Name, "global", StringComparison.OrdinalIgnoreCase)
+                };
             if (p is TypeLiteralParameterNode typeNode)
                 return new PushOperand { Kind = "Type", Value = typeNode.TypeName };
+            if (p is ClassLiteralParameterNode classNode)
+                return new PushOperand { Kind = "Class", Value = classNode.ClassName };
             if (p is IndexParameterNode idx && p.Name == "int")
                 return new PushOperand { Kind = "IntLiteral", Value = idx.Value };
             if (p is StringParameterNode str && (p.Name == "string" || !string.IsNullOrEmpty(str.Value)))
                 return new PushOperand { Kind = "StringLiteral", Value = str.Value ?? "" };
+            if (p is AddressLiteralParameterNode addressLiteral && !string.IsNullOrWhiteSpace(addressLiteral.Address))
+                return new PushOperand { Kind = "AddressLiteral", Value = addressLiteral.Address };
+            if (p is LambdaArgParameterNode lambdaArg)
+                return new PushOperand { Kind = "LambdaArg", Value = lambdaArg.Index };
             return new MemoryAddress { Index = 0 };
+        }
+
+        private static object? BuildLambdaMetadata(List<ParameterNode>? parameters)
+        {
+            var lambdaParams = parameters?
+                .OfType<LambdaParametersParameterNode>()
+                .FirstOrDefault();
+
+            if (lambdaParams == null || lambdaParams.Parameters.Count == 0)
+                return null;
+
+            return lambdaParams.Parameters.Cast<object>().ToList();
         }
 
         private (MemoryAddress left, long right) BuildCmpOperands(List<ParameterNode>? parameters)
@@ -488,7 +539,12 @@ namespace Magic.Kernel.Compilation
             foreach (var p in parameters ?? new List<ParameterNode>())
             {
                 if (p is MemoryParameterNode mem)
-                    left = new MemoryAddress { Index = mem.Index, IsGlobal = string.Equals(mem.Name, "global", StringComparison.OrdinalIgnoreCase) };
+                    left = new MemoryAddress
+                    {
+                        Index = mem.Index,
+                        LogicalIndex = mem.LogicalIndex ?? mem.Index,
+                        IsGlobal = string.Equals(mem.Name, "global", StringComparison.OrdinalIgnoreCase)
+                    };
                 else if (p is IndexParameterNode idx)
                     right = idx.Value;
             }

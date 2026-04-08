@@ -81,31 +81,18 @@ namespace Magic.Kernel.Runtime
             {
                 var unit = await CompileArtifactAsync(command).ConfigureAwait(false);
                 unit.InstanceIndex = instanceIndex;
-
-                _ = Task.Run(async () =>
+                var result = await _kernel.InterpreteRootAsync(unit).ConfigureAwait(false);
+                if (!result.Success)
                 {
-                    try
-                    {
-                        var result = await _kernel.InterpreteAsync(unit).ConfigureAwait(false);
-                        if (!result.Success)
-                        {
-                            var prefix = Magic.Kernel.Interpretation.ExecutionContext.GetPrefix(unit);
-                            Console.WriteLine($"[{DateTime.UtcNow:o}] {prefix}interpretation finished with Success = false.");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        var prefix = Magic.Kernel.Interpretation.ExecutionContext.GetPrefix(unit);
-                        Console.WriteLine($"[{DateTime.UtcNow:o}] {prefix}unhandled exception in interpreter thread: {ex}");
-                    }
-                });
+                    var prefix = Core.ExecutionCallContext.GetPrefix(unit);
+                    Console.WriteLine($"[{DateTime.UtcNow:o}] {prefix}interpretation finished with Success = false.");
+                }
 
-                // Fire-and-forget: we successfully scheduled the work.
-                return true;
+                return result.Success;
             }
             catch (Exception ex)
             {
-                var prefix = Magic.Kernel.Interpretation.ExecutionContext.GetPrefix();
+                var prefix = Core.ExecutionCallContext.GetPrefix();
                 Console.WriteLine($"[{DateTime.UtcNow:o}] {prefix}failed to start interpreter thread: {ex}");
                 return false;
             }
@@ -118,10 +105,22 @@ namespace Magic.Kernel.Runtime
                 case ArtifactType.Agi:
                     {
                         // Body is AGI source code.
-                        var compilation = await _kernel.CompileAsync(UnitArtifact.Body ?? string.Empty).ConfigureAwait(false);
+                        // Prefer file-based compilation when SourcePath is provided:
+                        // only CompileFileAsync resolves/links `use` directives against module files.
+                        CompilationResult compilation;
+                        if (!string.IsNullOrWhiteSpace(command?.SourcePath) && File.Exists(command.SourcePath))
+                        {
+                            compilation = await _kernel.Compiler.CompileFileAsync(command.SourcePath).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            compilation = await _kernel.CompileAsync(UnitArtifact.Body ?? string.Empty).ConfigureAwait(false);
+                        }
                         if (!compilation.Success || compilation.Result == null)
                             throw new InvalidOperationException(compilation.ErrorMessage ?? "Compilation failed.");
                         var unit = compilation.Result;
+                        if (!string.IsNullOrWhiteSpace(command?.SourcePath))
+                            unit.AttachSourcePath = Path.GetFullPath(command.SourcePath);
 
                         // Optionally persist compiled unit to disk when SourcePath is provided (CLI scenario).
                         if (!string.IsNullOrWhiteSpace(command?.SourcePath))

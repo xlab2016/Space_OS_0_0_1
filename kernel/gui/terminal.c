@@ -650,12 +650,21 @@ void term_execute_command(struct terminal *term, const char *cmd) {
         spc_argc = 2;
       }
 
+      printk(KERN_INFO "[spc-diag] term: before kern_spc_run "
+                       "term=%p cwd=\"%s\" spc_argc=%d\n",
+             (void *)term, term->cwd[0] ? term->cwd : "(empty)", spc_argc);
+      printk(KERN_INFO "[spc-diag] term: spc_argv@%p [0]=%p [1]=%p [2]=%p\n",
+             (void *)spc_argv, (void *)spc_argv[0], (void *)spc_argv[1],
+             (void *)spc_argv[2]);
+
       /* Redirect magic output to this terminal, run in-kernel (no freeze) */
       kern_magic_set_output_hook(gui_term_stdout_hook);
       elf_io_terminal = term;
-      kern_spc_run(spc_argc, spc_argv);
+      int spc_rc = kern_spc_run(spc_argc, spc_argv);
       kern_magic_set_output_hook(NULL);
       elf_io_terminal = NULL;
+
+      printk(KERN_INFO "[spc-diag] term: kern_spc_run returned %d\n", spc_rc);
     }
   } else if (str_starts_with(cmd, "spe ") || (cmd[0]=='s' && cmd[1]=='p' && cmd[2]=='e' && cmd[3]=='\0')) {
     /* Magic language interpreter: run kernel-internal spe (no process spawn) */
@@ -681,7 +690,10 @@ void term_execute_command(struct terminal *term, const char *cmd) {
       build_path(term, spe_arg1, spe_path1, sizeof(spe_path1));
       if (spe_path1[0]) {
         int i = 0;
-        while (spe_path1[i]) spe_arg1[i] = spe_path1[i++];
+        while (spe_path1[i]) {
+          spe_arg1[i] = spe_path1[i];
+          i++;
+        }
         spe_arg1[i] = '\0';
       }
 

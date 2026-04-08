@@ -106,15 +106,32 @@ namespace Magic.Compiler
                     return 1;
                 }
 
-                // Формат вывода из args (--output agiasm|agic), по умолчанию agic
+                // Формат вывода из args (--output agiasm|agic), по умолчанию agic.
+                // По умолчанию сохраняем артефакты в корневую папку `bin/` (как ожидается в примерах).
                 var format = outputFormat ?? "agic";
                 result.Result!.OutputFormat = format;
-                var outputFile = Path.ChangeExtension(inputFile, format == "agiasm" ? ".agiasm" : ".agic");
+
+                var outExt = format == "agiasm" ? ".agiasm" : ".agic";
+                var outName = Path.GetFileName(Path.ChangeExtension(inputFile, outExt));
+
+                var repoRoot = Directory.GetCurrentDirectory();
+
+                // 1) requirement: bin/ in repo root
+                var binDir = Path.Combine(repoRoot, "bin");
+                Directory.CreateDirectory(binDir);
+                var outputFile = Path.Combine(binDir, outName);
+
+                // 2) runtime: SpaceEnvironment resolves paths relative to design/Space
+                var spaceBinDir = Path.Combine(repoRoot, "design", "Space", "bin");
+                Directory.CreateDirectory(spaceBinDir);
+                var spaceOutputFile = Path.Combine(spaceBinDir, outName);
                 
                 PrintInfo($"Saving compiled output: {Path.GetFileName(outputFile)} ({format})");
                 
-                // Сохраняем скомпилированный результат
+                // Сохраняем скомпилированный результат (в оба bin-направления).
                 await result.Result.SaveAsync(outputFile);
+                if (!string.Equals(spaceOutputFile, outputFile, StringComparison.OrdinalIgnoreCase))
+                    await result.Result.SaveAsync(spaceOutputFile);
 
                 PrintSuccess("Compilation successful!");
                 PrintSeparator();

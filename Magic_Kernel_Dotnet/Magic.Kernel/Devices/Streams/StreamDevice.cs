@@ -17,11 +17,49 @@ namespace Magic.Kernel.Devices.Streams
         private long length;
         private long position;
 
+        /// <summary>
+        /// Convenience bridge for chained calls like: <c>claw1.methods.add(...)</c>.
+        /// The language lowers these calls using `getobj methods` (reflection) on the stream object,
+        /// so we need to expose the claw Methods registry from the StreamDevice wrapper.
+        /// </summary>
+        public ClawMethodsRegistry? Methods
+        {
+            get
+            {
+                if (Generalizations == null || Generalizations.Count == 0)
+                    return null;
+
+                foreach (var g in Generalizations)
+                {
+                    if (g is ClawStreamDevice claw)
+                        return claw.Methods;
+                }
+
+                return null;
+            }
+        }
+
         public StreamDevice(Func<byte[]?>? readAll = null, Action<byte[]?>? writeAll = null, long length = 0)
         {
             this.readAll = readAll;
             this.writeAll = writeAll;
             this.length = length;
+        }
+
+        public override async Task<object?> AwaitObjAsync()
+        {
+            // "await stream<claw>" awaits the StreamDevice wrapper, so we must forward AwaitObjAsync
+            // into generalizations (e.g. ClawStreamDevice) that perform real startup.
+            if (Generalizations != null && Generalizations.Count > 0)
+            {
+                foreach (var g in Generalizations)
+                {
+                    if (g == null) continue;
+                    _ = await g.AwaitObjAsync().ConfigureAwait(false);
+                }
+            }
+
+            return this;
         }
 
         public override async Task<object?> CallObjAsync(string methodName, object?[] args)
@@ -33,11 +71,15 @@ namespace Magic.Kernel.Devices.Streams
             {
                 if (g != null)
                 {
+                    if (g is Core.DefType dt)
+                        dt.ExecutionCallContext = ExecutionCallContext;
+                    if (g is DefStream ds)
+                        ds.ExecutionCallContext = ExecutionCallContext;
                     var r = await g.CallObjAsync(methodName, args).ConfigureAwait(false);
                     list.Add(r);
                 }
             }
-            return list;
+            return list.Count == 1 ? list[0] : list;
         }
 
         public override Task<DeviceOperationResult> OpenAsync() => Task.FromResult(DeviceOperationResult.Success);
@@ -78,7 +120,26 @@ namespace Magic.Kernel.Devices.Streams
 
         public override Task<DeviceOperationResult> ControlAsync(DeviceControlBase deviceControl) => Task.FromResult(DeviceOperationResult.Success);
 
-        public override Task<DeviceOperationResult> CloseAsync() => Task.FromResult(DeviceOperationResult.Success);
+        public override async Task<DeviceOperationResult> CloseAsync()
+        {
+            try
+            {
+                if (Generalizations is { Count: > 0 })
+                {
+                    foreach (var g in Generalizations)
+                    {
+                        if (g is IStreamDevice dev)
+                            await dev.CloseAsync().ConfigureAwait(false);
+                    }
+                }
+            }
+            finally
+            {
+                UnregisterFromStreamRegistry();
+            }
+
+            return DeviceOperationResult.Success;
+        }
 
         public override async Task<(DeviceOperationResult Result, IStreamChunk? Chunk)> ReadChunkAsync()
         {

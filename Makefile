@@ -167,7 +167,7 @@ $(BUILD_DIR)/kernel/%.o: $(KERNEL_DIR)/%.c
 		    -I$(KERNEL_DIR)/magic \
 		    -I$(KERNEL_DIR)/include -I$(KERNEL_DIR) \
 		    -fno-builtin -nostdlib -nostdinc \
-		    -DARCH_ARM64 \
+		    -DARCH_ARM64 -DMAGIC_KERNEL_DIAG \
 		    -Wno-unused-function -Wno-unused-variable \
 		    -c $< -o $@; \
 	else \

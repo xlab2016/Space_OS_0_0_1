@@ -1,5 +1,7 @@
 using Magic.Kernel.Processor;
 using Magic.Kernel.Space;
+using Magic.Kernel.Core;
+using Magic.Kernel.Types;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -36,6 +38,7 @@ namespace Magic.Kernel.Compilation
             List = 16,
             EntityType = 17,
             DataType = 18,
+            PushOperand = 19,
         }
 
         public static bool IsBinaryFormat(byte[] data)
@@ -63,6 +66,8 @@ namespace Magic.Kernel.Compilation
             WriteStringKeyedDictionary(bw, unit.Procedures, WriteProcedure);
             WriteStringKeyedDictionary(bw, unit.Functions, WriteFunction);
             WriteList(bw, unit.Exports, WriteExport);
+            WriteList(bw, unit.Types, WriteDefType);
+            WriteList(bw, unit.Objects, WriteDefObject);
 
             bw.Flush();
             return ms.ToArray();
@@ -92,6 +97,8 @@ namespace Magic.Kernel.Compilation
             unit.Procedures = ReadStringKeyedDictionary(br, ReadProcedure);
             unit.Functions = ReadStringKeyedDictionary(br, ReadFunction);
             unit.Exports = ReadList(br, ReadExport);
+            unit.Types = ReadList(br, ReadDefType);
+            unit.Objects = ReadList(br, ReadDefObject);
 
             return unit;
         }
@@ -109,6 +116,80 @@ namespace Magic.Kernel.Compilation
                 Type = ReadString(br) ?? string.Empty,
                 Source = ReadExecutionBlock(br),
             };
+        }
+
+        private static void WriteDefType(BinaryWriter bw, DefType type)
+        {
+            bw.Write(type is DefClass);
+            WriteString(bw, type.FullName ?? string.Empty);
+            if (type is DefClass dc)
+            {
+                var bases = dc.Inheritances ?? new List<string>();
+                bw.Write(bases.Count);
+                foreach (var b in bases)
+                    WriteString(bw, b ?? string.Empty);
+            }
+            else
+            {
+                var gens = type.Generalizations ?? new List<IDefType>();
+                bw.Write(gens.Count);
+                foreach (var g in gens)
+                    WriteString(bw, g?.Name ?? string.Empty);
+            }
+            var fields = type.Fields ?? new List<DefTypeField>();
+            bw.Write(fields.Count);
+            foreach (var field in fields)
+            {
+                WriteString(bw, field.Name ?? string.Empty);
+                WriteString(bw, field.Type ?? "any");
+                WriteString(bw, field.Visibility ?? "public");
+            }
+        }
+
+        private static DefType ReadDefType(BinaryReader br)
+        {
+            var isClass = br.ReadBoolean();
+            var name = ReadString(br) ?? string.Empty;
+            var count = br.ReadInt32();
+            var baseNames = new List<string>(count);
+            for (var i = 0; i < count; i++)
+                baseNames.Add(ReadString(br) ?? string.Empty);
+            var fieldCount = br.ReadInt32();
+            var fields = new List<DefTypeField>(fieldCount);
+            for (var i = 0; i < fieldCount; i++)
+            {
+                fields.Add(new DefTypeField
+                {
+                    Name = ReadString(br) ?? string.Empty,
+                    Type = ReadString(br) ?? "any",
+                    Visibility = ReadString(br) ?? "public"
+                });
+            }
+
+            if (isClass)
+            {
+                var cls = new DefClass(name, baseNames) { Fields = fields };
+                cls.NormalizeLegacyQualifiedName();
+                return cls;
+            }
+
+            var dt = new DefType
+            {
+                Name = name,
+                Generalizations = baseNames.Select(x => (IDefType)new DefType { Name = x }).ToList(),
+                Fields = fields
+            };
+            dt.NormalizeLegacyQualifiedName();
+            return dt;
+        }
+
+        private static void WriteDefObject(BinaryWriter bw, DefObject obj)
+            => WriteString(bw, obj.Type.FullName ?? string.Empty);
+
+        private static DefObject ReadDefObject(BinaryReader br)
+        {
+            var s = ReadString(br) ?? string.Empty;
+            return new DefObject(DefType.FromDefBytecode(s, null, false, null));
         }
 
         private static void WriteProcedure(BinaryWriter bw, Processor.Procedure proc)
@@ -280,6 +361,14 @@ namespace Magic.Kernel.Compilation
                 return;
             }
 
+            if (value is PushOperand po)
+            {
+                bw.Write((byte)V.PushOperand);
+                WriteString(bw, po.Kind ?? string.Empty);
+                WriteVariant(bw, po.Value);
+                return;
+            }
+
             if (value is Vertex v)
             {
                 bw.Write((byte)V.Vertex);
@@ -405,6 +494,12 @@ namespace Magic.Kernel.Compilation
                         p[key] = ReadVariant(br)!;
                     }
                     return new CallInfo { FunctionName = fn, Parameters = p };
+                }
+                case V.PushOperand:
+                {
+                    var kind = ReadString(br) ?? string.Empty;
+                    var value = ReadVariant(br);
+                    return new PushOperand { Kind = kind, Value = value };
                 }
                 case V.Vertex:
                     return ReadVertex(br);

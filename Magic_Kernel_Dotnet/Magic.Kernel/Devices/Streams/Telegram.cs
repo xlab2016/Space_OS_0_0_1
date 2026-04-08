@@ -1,4 +1,4 @@
-﻿using Magic.Kernel.Devices.Streams.Drivers;
+using Magic.Kernel.Devices.Streams.Drivers;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -11,7 +11,7 @@ namespace Magic.Kernel.Devices.Streams
     {
         public override async Task<DeviceOperationResult> OpenAsync()
         {
-            _driver = new TelegramDriver(BotToken, DefaultChatId);
+            _driver = new TelegramDriver(BotToken, DefaultChatId, consolePrefix: ExecutionCallContext?.GetPrefix() ?? string.Empty);
             return await base.OpenAsync();
         }
     }

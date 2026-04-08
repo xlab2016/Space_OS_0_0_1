@@ -6,10 +6,10 @@ namespace Magic.Kernel.Devices.Store
     public interface IDatabaseDevice
     {
         /// <summary>Finds table in runtime database by name.</summary>
-        Table? FindTable(Database runtimeDatabase, string tableName);
+        Table? FindTable(DatabaseDevice runtimeDatabase, string tableName);
 
         /// <summary>Updates or inserts table definition in runtime database.</summary>
-        void UpsertTable(Database runtimeDatabase, string tableName, Table table);
+        void UpsertTable(DatabaseDevice runtimeDatabase, string tableName, Table table);
     }
 }
 

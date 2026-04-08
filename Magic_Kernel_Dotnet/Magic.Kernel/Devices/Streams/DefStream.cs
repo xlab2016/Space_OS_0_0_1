@@ -1,19 +1,56 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
+using System.Threading;
 using System.Threading.Tasks;
 using Magic.Kernel.Core;
 using Magic.Kernel.Devices;
 using Magic.Kernel.Interpretation;
+using Magic.Kernel;
 
 namespace Magic.Kernel.Devices.Streams
 {
     /// <summary>Base for stream devices that are also def-types (Call by method name). Implements CallAsync once; subclasses implement IStreamDevice.</summary>
     public abstract class DefStream : IStreamDevice, IDefType
     {
+        private static long _nextRegistryKey;
+        private static readonly ConcurrentDictionary<long, WeakReference<DefStream>> Registry = new();
+
+        private readonly long _registryKey = Interlocked.Increment(ref _nextRegistryKey);
+
         public long? Index { get; set; }
         public string Name { get; set; } = "";
         public StructurePosition? Position { get; set; }
         public List<IDefType> Generalizations { get; set; } = new List<IDefType>();
+        public ExecutionCallContext? ExecutionCallContext { get; set; }
+
+        protected DefStream()
+        {
+            Registry[_registryKey] = new WeakReference<DefStream>(this);
+        }
+
+        /// <summary>Снять с глобального списка монитора (после Close); иначе объект висит в GetActiveStreams, пока жив по ссылкам.</summary>
+        protected void UnregisterFromStreamRegistry()
+        {
+            Registry.TryRemove(_registryKey, out _);
+        }
+
+        public static IReadOnlyList<DefStream> GetActiveStreams()
+        {
+            var list = new List<DefStream>();
+            foreach (var item in Registry.ToArray())
+            {
+                if (item.Value.TryGetTarget(out var stream))
+                {
+                    list.Add(stream);
+                    continue;
+                }
+
+                Registry.TryRemove(item.Key, out _);
+            }
+
+            return list;
+        }
 
         public abstract Task<DeviceOperationResult> OpenAsync();
         public abstract Task<(DeviceOperationResult Result, byte[] Bytes)> ReadAsync();
@@ -76,12 +113,12 @@ namespace Magic.Kernel.Devices.Streams
                     var read = await ReadChunkAsync().ConfigureAwait(false);
                     if (!read.Result.IsSuccess || read.Chunk == null)
                         return (true, null, null);
-                    return (false, read.Chunk, null);
+                    return (false, new DeltaWeakDisposable(read.Chunk), null);
                 case "data":
                     var read2 = await ReadAsync().ConfigureAwait(false);
                     if (!read2.Result.IsSuccess || read2.Bytes == null)
                         return (true, null, null);
-                    return (true, read2.Bytes, null);
+                    return (true, new DeltaWeakDisposable(read2.Bytes), null);
             }
             return (true, null, null);
         }
@@ -101,6 +138,16 @@ namespace Magic.Kernel.Devices.Streams
             if (o is long l) return new StructurePosition { AbsolutePosition = l };
             if (o is int i) return new StructurePosition { AbsolutePosition = i };
             return null;
+        }
+
+        public override string ToString()
+        {
+            var kind = GetType().Name;
+            var nm = string.IsNullOrWhiteSpace(Name) ? "" : Name.Trim();
+            var namePart = string.IsNullOrEmpty(nm) ? "" : $", name={nm}";
+            var idxPart = Index.HasValue ? $", index={Index}" : "";
+            var posPart = Position != null ? $", pos={Position}" : "";
+            return $"{kind}(#{_registryKey}{namePart}{idxPart}{posPart})";
         }
     }
 }

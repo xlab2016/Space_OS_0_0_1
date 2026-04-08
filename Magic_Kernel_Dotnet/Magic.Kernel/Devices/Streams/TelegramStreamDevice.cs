@@ -33,7 +33,7 @@ namespace Magic.Kernel.Devices.Streams
 
         public override async Task<DeviceOperationResult> OpenAsync()
         {
-            _driver = new TelegramDriver(BotToken, DefaultChatId);
+            _driver = new TelegramDriver(BotToken, DefaultChatId, consolePrefix: ExecutionCallContext?.GetPrefix() ?? string.Empty);
             return await _driver.OpenAsync().ConfigureAwait(false);
         }
 

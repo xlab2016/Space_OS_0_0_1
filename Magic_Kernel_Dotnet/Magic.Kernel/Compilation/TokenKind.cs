@@ -8,6 +8,8 @@ namespace Magic.Kernel.Compilation
         Number,
         Float,
         StringLiteral,
+        /// <summary>Строка от // до конца строки (только при токенизации для подсветки).</summary>
+        LineComment,
         Colon,
         Comma,
         LBracket,

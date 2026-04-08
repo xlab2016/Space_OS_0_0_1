@@ -15,24 +15,31 @@
 /* Internal helpers                                                    */
 /* ------------------------------------------------------------------ */
 
-static void ensure_capacity(Scanner *s)
+/* Returns 0 on realloc failure (caller must not write past tok_cap). */
+static int ensure_capacity(Scanner *s)
 {
-    if (s->tok_count >= s->tok_cap) {
-        int new_cap = s->tok_cap == 0 ? 64 : s->tok_cap * 2;
-        Token *new_tokens = realloc(s->tokens, new_cap * sizeof(Token));
-        if (!new_tokens) {
-            fprintf(stderr, "[scanner] out of memory\n");
-            return;
-        }
-        s->tokens = new_tokens;
-        s->tok_cap = new_cap;
+    if (s->tok_count < s->tok_cap)
+        return 1;
+    int new_cap = s->tok_cap == 0 ? 64 : s->tok_cap * 2;
+    Token *new_tokens = realloc(s->tokens, (size_t)new_cap * sizeof(Token));
+    if (!new_tokens) {
+        fprintf(stderr, "[scanner] out of memory (need cap %d)\n", new_cap);
+#if defined(MAGIC_KERNEL_DIAG)
+        magic_compile_diag_i2("scanner_realloc_fail", s->tok_cap, new_cap);
+#endif
+        return 0;
     }
+    s->tokens = new_tokens;
+    s->tok_cap = new_cap;
+    return 1;
 }
 
-static void add_token(Scanner *s, Token tok)
+static int add_token(Scanner *s, Token tok)
 {
-    ensure_capacity(s);
+    if (!ensure_capacity(s))
+        return 0;
     s->tokens[s->tok_count++] = tok;
+    return 1;
 }
 
 static Token make_tok(TokenKind kind, const char *val, int start, int end)
@@ -283,18 +290,39 @@ static void scan_all(Scanner *s)
     s->tok_pos   = 0;
     s->pos       = 0;
 
+#if defined(MAGIC_KERNEL_DIAG)
+    magic_compile_diag_i2("scan_all_begin", s->src_len, 0);
+#endif
+
     skip_whitespace(s);
     while (s->pos < s->src_len) {
         skip_line_comments(s);
         if (s->pos >= s->src_len)
             break;
         Token tok = scan_one(s);
-        add_token(s, tok);
+        if (!add_token(s, tok)) {
+#if defined(MAGIC_KERNEL_DIAG)
+            magic_compile_diag("scan_all aborted (OOM)");
+#endif
+            break;
+        }
+#if defined(MAGIC_KERNEL_DIAG)
+        if ((s->tok_count & 15) == 1)
+            magic_compile_diag_i2("scan token", s->tok_count, (int)tok.kind);
+#endif
         if (tok.kind == TOK_EOF)
             break;
         skip_whitespace(s);
     }
-    add_token(s, make_eof(s->pos));
+    if (!add_token(s, make_eof(s->pos))) {
+#if defined(MAGIC_KERNEL_DIAG)
+        magic_compile_diag("scan_all: failed to append EOF token");
+#endif
+    }
+
+#if defined(MAGIC_KERNEL_DIAG)
+    magic_compile_diag_i2("scan_all_done", s->tok_count, s->tok_cap);
+#endif
 }
 
 /* ------------------------------------------------------------------ */

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * SPACE-OS ELF64 Loader
  * Ported from VibeOS
  */
@@ -160,7 +160,9 @@ int elf_load_at(const void *data, size_t size, uint64_t load_base,
   printk(KERN_INFO "[ELF] Loading %s at 0x%llx (%d program headers)\n",
          is_pie ? "PIE" : "EXEC", (unsigned long long)load_base, ehdr->e_phnum);
 
-  uint64_t total_size = 0;
+  /* Span of actually mapped PT_LOAD VAs (for next_load_addr bookkeeping) */
+  uint64_t map_min = (uint64_t)-1;
+  uint64_t map_max = 0;
   const Elf64_Dyn *dynamic = NULL;
 
   /* Process program headers */
@@ -174,9 +176,11 @@ int elf_load_at(const void *data, size_t size, uint64_t load_base,
     const Elf64_Phdr *phdr =
         (const Elf64_Phdr *)(base + ehdr->e_phoff + i * ehdr->e_phentsize);
 
-    /* Remember DYNAMIC segment for relocations */
+    /* Remember DYNAMIC segment for relocations (VA is relative for PIE, absolute for EXEC) */
     if (phdr->p_type == PT_DYNAMIC) {
-      dynamic = (const Elf64_Dyn *)(load_base + phdr->p_vaddr);
+      uint64_t dyn_va =
+          is_pie ? (load_base + phdr->p_vaddr) : phdr->p_vaddr;
+      dynamic = (const Elf64_Dyn *)dyn_va;
       continue;
     }
 
@@ -206,9 +210,11 @@ int elf_load_at(const void *data, size_t size, uint64_t load_base,
       elf_memset((uint8_t *)dest + phdr->p_filesz, 0, bss_size);
     }
 
-    uint64_t seg_end = phdr->p_vaddr + phdr->p_memsz;
-    if (seg_end > total_size)
-      total_size = seg_end;
+    uint64_t seg_end = dest_addr + phdr->p_memsz;
+    if (dest_addr < map_min)
+      map_min = dest_addr;
+    if (seg_end > map_max)
+      map_max = seg_end;
   }
 
   /* Process relocations for PIE binaries */
@@ -230,7 +236,8 @@ int elf_load_at(const void *data, size_t size, uint64_t load_base,
   if (info) {
     info->entry = entry;
     info->load_base = load_base;
-    info->load_size = total_size;
+    info->load_size =
+        (map_max > map_min) ? (map_max - map_min) : 0;
   }
 
   return 0;

@@ -6,6 +6,22 @@ using Telegram.Bot.Types;
 
 namespace Magic.Drivers.Telegram
 {
+    public sealed class TelegramIncomingMessage
+    {
+        public int Id { get; init; }
+        public DateTime Time { get; init; }
+        public long ChatId { get; init; }
+        public string Text { get; init; } = string.Empty;
+        /// <summary>Optional public @username (no @).</summary>
+        public string? Username { get; init; }
+        /// <summary>Visible name in Telegram (first+last or chat title).</summary>
+        public string DisplayName { get; init; } = string.Empty;
+        public string TokenHash { get; init; } = string.Empty;
+        public PhotoSize[]? Photo { get; init; }
+        public Document? Document { get; init; }
+        public TelegramIncomingMessage? Reply { get; init; }
+    }
+
     /// <summary>Single Telegram bot connection: send and long-polling receive in one instance.</summary>
     public sealed class TelegramConnection
     {
@@ -38,10 +54,10 @@ namespace Magic.Drivers.Telegram
         /// Exits when cancellation is requested.
         /// </summary>
         /// <param name="onMessage">
-        /// (chatId, textOrCaption, username, tokenHash, photo, document)
+        /// TelegramIncomingMessage with id/time/reply support
         /// </param>
         public async Task RunReceiveLoopAsync(
-            Action<long, string, string?, string, PhotoSize[]?, Document?> onMessage,
+            Action<TelegramIncomingMessage> onMessage,
             CancellationToken cancellationToken = default)
         {
             int? offset = null;
@@ -64,13 +80,10 @@ namespace Magic.Drivers.Telegram
                         if (string.IsNullOrEmpty(text) && !hasPhoto && !hasDocument)
                             continue;
 
-                        var chatId = msg.Chat.Id;
-                        var username = msg.Chat.Username;
-                        var photo = msg.Photo;
-                        var document = msg.Document;
+                        var incomingMessage = ToIncomingMessage(msg);
                         try
                         {
-                            onMessage(chatId, text, username, _tokenHash, photo, document);
+                            onMessage(incomingMessage);
                         }
                         catch
                         {
@@ -88,6 +101,24 @@ namespace Magic.Drivers.Telegram
                     await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
                 }
             }
+        }
+
+        private TelegramIncomingMessage ToIncomingMessage(Message msg)
+        {
+            var text = msg.Text ?? msg.Caption ?? string.Empty;
+            return new TelegramIncomingMessage
+            {
+                Id = msg.Id,
+                Time = msg.Date,
+                ChatId = msg.Chat?.Id ?? 0,
+                Text = text,
+                Username = TelegramMessageSender.GetPublicUsername(msg),
+                DisplayName = TelegramMessageSender.GetDisplayName(msg),
+                TokenHash = _tokenHash,
+                Photo = msg.Photo,
+                Document = msg.Document,
+                Reply = msg.ReplyToMessage == null ? null : ToIncomingMessage(msg.ReplyToMessage)
+            };
         }
 
         /// <summary>Get Telegram FilePath for file_id without downloading file bytes.</summary>

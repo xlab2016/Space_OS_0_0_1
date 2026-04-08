@@ -1,5 +1,7 @@
 using Magic.Kernel.Processor;
 using Magic.Kernel.Space;
+using Magic.Kernel.Core;
+using Magic.Kernel.Types;
 using System;
 using System.Buffers;
 using System.Collections.Generic;
@@ -61,6 +63,18 @@ namespace Magic.Kernel.Compilation
             {
                 WriteExport(writer, e);
             }
+            writer.WriteEndArray();
+
+            writer.WritePropertyName("types");
+            writer.WriteStartArray();
+            foreach (var t in unit.Types)
+                WriteDefType(writer, t);
+            writer.WriteEndArray();
+
+            writer.WritePropertyName("objects");
+            writer.WriteStartArray();
+            foreach (var o in unit.Objects)
+                WriteDefObject(writer, o);
             writer.WriteEndArray();
 
             writer.WriteEndObject();
@@ -136,7 +150,179 @@ namespace Magic.Kernel.Compilation
                 }
             }
 
+            unit.Types = new List<DefType>();
+            if (root.TryGetProperty("types", out var types) && types.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in types.EnumerateArray())
+                    unit.Types.Add(ReadDefType(item));
+            }
+
+            unit.Objects = new List<DefObject>();
+            if (root.TryGetProperty("objects", out var objects) && objects.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in objects.EnumerateArray())
+                    unit.Objects.Add(ReadDefObject(item));
+            }
+
             return unit;
+        }
+
+        private static void WriteDefType(Utf8JsonWriter w, DefType t)
+        {
+            w.WriteStartObject();
+            w.WriteString("kind", t is DefClass ? "class" : "type");
+            w.WriteString("namespace", t.Namespace ?? string.Empty);
+            w.WriteString("name", t.Name ?? string.Empty);
+            w.WritePropertyName("bases");
+            w.WriteStartArray();
+            if (t is DefClass dc)
+            {
+                foreach (var b in dc.Inheritances ?? new List<string>())
+                    w.WriteStringValue(b ?? string.Empty);
+            }
+            else
+            {
+                foreach (var g in t.Generalizations ?? new List<IDefType>())
+                    w.WriteStringValue(g?.Name ?? string.Empty);
+            }
+
+            w.WriteEndArray();
+            w.WritePropertyName("fields");
+            w.WriteStartArray();
+            foreach (var f in t.Fields ?? new List<DefTypeField>())
+            {
+                w.WriteStartObject();
+                w.WriteString("name", f.Name ?? string.Empty);
+                w.WriteString("type", f.Type ?? "any");
+                w.WriteString("visibility", f.Visibility ?? "public");
+                w.WriteEndObject();
+            }
+            w.WriteEndArray();
+            w.WritePropertyName("methods");
+            w.WriteStartArray();
+            foreach (var m in t.Methods ?? new List<DefTypeMethod>())
+            {
+                w.WriteStartObject();
+                w.WriteString("name", m.Name ?? string.Empty);
+                w.WriteString("fullName", m.FullName ?? string.Empty);
+                w.WriteString("returnType", m.ReturnType ?? "void");
+                w.WriteString("visibility", m.Visibility ?? "public");
+                w.WriteString("firstParameterTypeFq", m.FirstParameterTypeFq ?? string.Empty);
+                w.WriteEndObject();
+            }
+
+            w.WriteEndArray();
+            w.WriteEndObject();
+        }
+
+        private static DefType ReadDefType(JsonElement e)
+        {
+            var kind = e.TryGetProperty("kind", out var k) ? (k.GetString() ?? "type") : "type";
+            var ns = e.TryGetProperty("namespace", out var nsEl) ? (nsEl.GetString() ?? string.Empty) : string.Empty;
+            var name = e.TryGetProperty("name", out var n) ? (n.GetString() ?? string.Empty) : string.Empty;
+            var baseNames = new List<string>();
+            if (e.TryGetProperty("bases", out var bases) && bases.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var b in bases.EnumerateArray())
+                {
+                    if (b.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(b.GetString()))
+                        baseNames.Add(b.GetString()!);
+                }
+            }
+
+            var fields = new List<DefTypeField>();
+            if (e.TryGetProperty("fields", out var fieldItems) && fieldItems.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var fieldItem in fieldItems.EnumerateArray())
+                {
+                    if (fieldItem.ValueKind != JsonValueKind.Object)
+                        continue;
+
+                    var fieldName = fieldItem.TryGetProperty("name", out var fName)
+                        ? (fName.GetString() ?? string.Empty)
+                        : string.Empty;
+                    if (string.IsNullOrWhiteSpace(fieldName))
+                        continue;
+
+                    var visibility = fieldItem.TryGetProperty("visibility", out var fVisibility)
+                        ? (fVisibility.GetString() ?? "public")
+                        : "public";
+                    var fieldType = fieldItem.TryGetProperty("type", out var fType)
+                        ? (fType.GetString() ?? "any")
+                        : "any";
+                    fields.Add(new DefTypeField
+                    {
+                        Name = fieldName,
+                        Type = string.IsNullOrWhiteSpace(fieldType) ? "any" : fieldType,
+                        Visibility = string.IsNullOrWhiteSpace(visibility) ? "public" : visibility
+                    });
+                }
+            }
+
+            var methods = new List<DefTypeMethod>();
+            if (e.TryGetProperty("methods", out var methodItems) && methodItems.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var methodItem in methodItems.EnumerateArray())
+                {
+                    if (methodItem.ValueKind != JsonValueKind.Object)
+                        continue;
+
+                    var mName = methodItem.TryGetProperty("name", out var mn) ? (mn.GetString() ?? string.Empty) : string.Empty;
+                    if (string.IsNullOrWhiteSpace(mName))
+                        continue;
+                    var mFull = methodItem.TryGetProperty("fullName", out var mf) ? (mf.GetString() ?? string.Empty) : string.Empty;
+                    var mRet = methodItem.TryGetProperty("returnType", out var mr) ? (mr.GetString() ?? "void") : "void";
+                    var mVis = methodItem.TryGetProperty("visibility", out var mv) ? (mv.GetString() ?? "public") : "public";
+                    var mFp = methodItem.TryGetProperty("firstParameterTypeFq", out var mfp) ? mfp.GetString() : null;
+                    methods.Add(new DefTypeMethod
+                    {
+                        Name = mName.Trim(),
+                        FullName = string.IsNullOrWhiteSpace(mFull) ? mName.Trim() : mFull.Trim(),
+                        ReturnType = string.IsNullOrWhiteSpace(mRet) ? "void" : mRet.Trim(),
+                        Visibility = string.IsNullOrWhiteSpace(mVis) ? "public" : mVis.Trim(),
+                        FirstParameterTypeFq = string.IsNullOrWhiteSpace(mFp) ? null : mFp.Trim()
+                    });
+                }
+            }
+
+            DefType type = string.Equals(kind, "class", StringComparison.OrdinalIgnoreCase)
+                ? new DefClass(name, baseNames)
+                : new DefType
+                {
+                    Name = name,
+                    Generalizations = baseNames.Select(x => (IDefType)new DefType { Name = x }).ToList()
+                };
+
+            type.Namespace = ns;
+            type.Fields = fields;
+            type.Methods = methods;
+
+            if (string.IsNullOrEmpty((type.Namespace ?? "").Trim()) &&
+                !string.IsNullOrEmpty(type.Name) &&
+                type.Name.IndexOf(':') >= 0)
+                type.NormalizeLegacyQualifiedName();
+
+            return type;
+        }
+
+        private static void WriteDefObject(Utf8JsonWriter w, DefObject o)
+        {
+            w.WriteStartObject();
+            w.WriteString("namespace", o.Type.Namespace ?? string.Empty);
+            w.WriteString("name", o.Type.Name ?? string.Empty);
+            w.WriteString("typeName", o.Type.FullName ?? string.Empty);
+            w.WriteEndObject();
+        }
+
+        private static DefObject ReadDefObject(JsonElement e)
+        {
+            var ns = e.TryGetProperty("namespace", out var nsEl) ? (nsEl.GetString() ?? string.Empty) : string.Empty;
+            var nm = e.TryGetProperty("name", out var nmEl) ? (nmEl.GetString() ?? string.Empty) : string.Empty;
+            if (!string.IsNullOrEmpty(ns.Trim()) || !string.IsNullOrEmpty(nm.Trim()))
+                return new DefObject(new DefType { Namespace = ns, Name = nm });
+
+            var typeName = e.TryGetProperty("typeName", out var n) ? (n.GetString() ?? string.Empty) : string.Empty;
+            return new DefObject(DefType.FromDefBytecode(typeName, null, false, null));
         }
 
         private static void WriteExport(Utf8JsonWriter w, Export e)

@@ -307,6 +307,8 @@ int     magic_compile_file(const char *path, CompileResult *out);
 /* Serialization */
 int     magic_save_agic(const ExecutableUnit *unit, const char *path);
 int     magic_load_agic(const char *path, ExecutableUnit *unit);
+int     magic_load_agic_from_buffer(const unsigned char *data, size_t len,
+                                    ExecutableUnit *unit);
 int     magic_save_agiasm(const ExecutableUnit *unit, const char *path);
 
 /* Interpreter */
@@ -341,5 +343,11 @@ int     val_equal(Value a, Value b);
 
 /* Utilities */
 void    magic_get_line_col(const char *source, int pos, int *line, int *col);
+
+#if defined(MAGIC_KERNEL_DIAG)
+/* UART diagnostics when Magic is built into kernel (magic_kern.c) */
+void magic_compile_diag(const char *phase);
+void magic_compile_diag_i2(const char *tag, int a, int b);
+#endif
 
 #endif /* MAGIC_H */

@@ -8,6 +8,12 @@ namespace Magic.Kernel.Processor
         public string FunctionName { get; set; } = string.Empty;
         public Dictionary<string, object> Parameters { get; set; } = new Dictionary<string, object>();
 
+        /// <summary>Два слота: [0]=aggregate, [1]=delta — заполняются из Parameters после снятия со стека (acall/call на streamwait_loop_*_delta).</summary>
+        public long[]? StreamWaitDeltaBindSlots { get; set; }
+
+        /// <summary>Внешние локальные слоты тела streamwait: Parameters["2"],["3"],... копируются в эти индексы в новом кадре.</summary>
+        public long[]? StreamWaitCaptureToSlots { get; set; }
+
         public override string ToString()
         {
             if (Parameters.Count == 0)

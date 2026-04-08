@@ -522,12 +522,17 @@ static int is_program_keyword(const char *val)
            str_eq_ci(val, "asm");
 }
 
+/* Statement buffer for body lowering (was 2048x2048 = 4MB static — brutal in kernel). */
+#define PARSE_STMT_LINE_MAX 1024
+#define PARSE_BODY_MAX_STMTS 256
+
 /* Consume a block and return statement strings.
    Assumes opening "{" was already consumed.
    If asm_mode: split on newlines when next token starts opcode.
    Otherwise: split on newlines and semicolons.
    Returns count of statements added to stmts (up to max_stmts). */
-static int consume_block(Parser *p, char stmts[][2048], int max_stmts, int asm_mode)
+static int consume_block(Parser *p, char stmts[][PARSE_STMT_LINE_MAX], int max_stmts,
+                           int asm_mode)
 {
     int count  = 0;
     int depth  = 1;
@@ -541,7 +546,8 @@ static int consume_block(Parser *p, char stmts[][2048], int max_stmts, int asm_m
         /* trim */ \
         int _i = 0; while (buf[_i] == ' ' || buf[_i] == '\t') _i++; \
         if (buf[_i] && count < max_stmts) { \
-            strncpy(stmts[count++], buf + _i, 2048 - 1); \
+            strncpy(stmts[count++], buf + _i, PARSE_STMT_LINE_MAX - 1); \
+            stmts[count - 1][PARSE_STMT_LINE_MAX - 1] = '\0'; \
         } \
         blen = 0; \
     } \
@@ -644,10 +650,9 @@ static int parse_body_block(Parser *p, Block *block)
         asm_mode = 1;
     }
 
-    /* Collect statement strings */
-#define MAX_STMTS 2048
-    static char stmts[2048][2048];
-    int count = consume_block(p, stmts, MAX_STMTS, asm_mode);
+    /* Collect statement strings (bounded; was 4MB static) */
+    static char stmts[PARSE_BODY_MAX_STMTS][PARSE_STMT_LINE_MAX];
+    int count = consume_block(p, stmts, PARSE_BODY_MAX_STMTS, asm_mode);
 
     if (asm_mode) {
         /* consume outer } */
@@ -672,7 +677,6 @@ static int parse_body_block(Parser *p, Block *block)
             lower_statement(&ctx, stmts[i]);
         }
     }
-#undef MAX_STMTS
     return 1;
 }
 
@@ -933,11 +937,17 @@ static void consume_line(Parser *p)
 
 int magic_compile_source(const char *source, CompileResult *out)
 {
+#if defined(MAGIC_KERNEL_DIAG)
+    magic_compile_diag("magic_compile_source: memset out");
+#endif
     memset(out, 0, sizeof(*out));
     out->success = 1;
 
     /* Init executable unit */
     ExecutableUnit *unit = &out->unit;
+#if defined(MAGIC_KERNEL_DIAG)
+    magic_compile_diag("magic_compile_source: memset unit");
+#endif
     memset(unit, 0, sizeof(*unit));
     block_init(&unit->entry_point);
 
@@ -949,7 +959,14 @@ int magic_compile_source(const char *source, CompileResult *out)
     memset(&p, 0, sizeof(p));
     p.result = out;
     p.source = source;
+#if defined(MAGIC_KERNEL_DIAG)
+    magic_compile_diag("magic_compile_source: before scanner_init");
+#endif
     scanner_init(&p.scanner, source);
+#if defined(MAGIC_KERNEL_DIAG)
+    magic_compile_diag_i2("magic_compile_source: after scanner_init",
+                          p.scanner.tok_count, p.scanner.tok_cap);
+#endif
 
     int is_structured = 0;
     int unprocessed_lines = 0;
@@ -1008,24 +1025,47 @@ int magic_compile_source(const char *source, CompileResult *out)
 
 static char *read_file(const char *path, long *out_size)
 {
+#if defined(MAGIC_KERNEL_DIAG)
+    magic_compile_diag("read_file: fopen");
+#endif
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
+#if defined(MAGIC_KERNEL_DIAG)
+    magic_compile_diag_i2("read_file: size", (int)sz, 0);
+#endif
     fseek(f, 0, SEEK_SET);
     char *buf = malloc(sz + 1);
-    if (!buf) { fclose(f); return NULL; }
-    if (fread(buf, 1, sz, f) != (size_t)sz) {
-        free(buf); fclose(f); return NULL;
+    if (!buf) {
+#if defined(MAGIC_KERNEL_DIAG)
+        magic_compile_diag("read_file: malloc failed");
+#endif
+        fclose(f);
+        return NULL;
+    }
+    if (fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
+#if defined(MAGIC_KERNEL_DIAG)
+        magic_compile_diag("read_file: fread incomplete");
+#endif
+        free(buf);
+        fclose(f);
+        return NULL;
     }
     buf[sz] = '\0';
     if (out_size) *out_size = sz;
     fclose(f);
+#if defined(MAGIC_KERNEL_DIAG)
+    magic_compile_diag("read_file: ok");
+#endif
     return buf;
 }
 
 int magic_compile_file(const char *path, CompileResult *out)
 {
+#if defined(MAGIC_KERNEL_DIAG)
+    magic_compile_diag("magic_compile_file: enter");
+#endif
     long  sz;
     char *src = read_file(path, &sz);
     if (!src) {
@@ -1033,7 +1073,13 @@ int magic_compile_file(const char *path, CompileResult *out)
         snprintf(out->error, sizeof(out->error), "Cannot open file: %s", path);
         return 0;
     }
+#if defined(MAGIC_KERNEL_DIAG)
+    magic_compile_diag("magic_compile_file: calling magic_compile_source");
+#endif
     int result = magic_compile_source(src, out);
+#if defined(MAGIC_KERNEL_DIAG)
+    magic_compile_diag_i2("magic_compile_file: source done", result, out->success);
+#endif
     free(src);
     return result;
 }
@@ -1322,6 +1368,137 @@ static int read_block_bin(FILE *f, Block *b)
         instr.op2    = read_operand_bin(f);
         block_add(b, instr);
     }
+    return 1;
+}
+
+typedef struct {
+    const unsigned char *b;
+    size_t len;
+    size_t pos;
+} MagicAgicBuf;
+
+static int magic_buf_read_str(MagicAgicBuf *m, char *buf, int buflen)
+{
+    int i = 0;
+    while (m->pos < m->len && i < buflen - 1) {
+        unsigned char c = m->b[m->pos++];
+        if (c == 0)
+            break;
+        buf[i++] = (char)c;
+    }
+    buf[i] = '\0';
+    return 1;
+}
+
+static uint32_t magic_buf_read_u32(MagicAgicBuf *m)
+{
+    uint32_t v = 0;
+    if (m->pos + 4 > m->len)
+        return 0;
+    memcpy(&v, m->b + m->pos, 4);
+    m->pos += 4;
+    return v;
+}
+
+static uint8_t magic_buf_read_u8(MagicAgicBuf *m)
+{
+    if (m->pos >= m->len)
+        return 0;
+    return m->b[m->pos++];
+}
+
+static int64_t magic_buf_read_i64(MagicAgicBuf *m)
+{
+    int64_t v = 0;
+    if (m->pos + 8 > m->len)
+        return 0;
+    memcpy(&v, m->b + m->pos, 8);
+    m->pos += 8;
+    return v;
+}
+
+static double magic_buf_read_f64(MagicAgicBuf *m)
+{
+    double v = 0;
+    if (m->pos + 8 > m->len)
+        return 0;
+    memcpy(&v, m->b + m->pos, 8);
+    m->pos += 8;
+    return v;
+}
+
+static Operand magic_buf_read_operand_bin(MagicAgicBuf *m)
+{
+    Operand o = op_none();
+    uint8_t kind = magic_buf_read_u8(m);
+    o.kind = (OperandKind)kind;
+    switch (o.kind) {
+        case OPERAND_NONE: break;
+        case OPERAND_INT:  o.int_val = (long)magic_buf_read_i64(m); break;
+        case OPERAND_FLOAT:o.float_val = magic_buf_read_f64(m); break;
+        case OPERAND_STRING:
+        case OPERAND_CALL_INFO:
+        case OPERAND_LABEL:
+        case OPERAND_TYPE:
+            magic_buf_read_str(m, o.str_val, OPERAND_STR_MAX); break;
+        case OPERAND_MEMORY:
+        case OPERAND_GLOBAL_MEMORY:
+            o.mem_index = (long)magic_buf_read_i64(m);
+            o.is_global = magic_buf_read_u8(m);
+            break;
+        default: break;
+    }
+    return o;
+}
+
+static int magic_buf_read_block_bin(MagicAgicBuf *m, Block *b)
+{
+    block_init(b);
+    uint32_t count = magic_buf_read_u32(m);
+    for (uint32_t i = 0; i < count; i++) {
+        Instruction instr;
+        instr.opcode = (Opcode)magic_buf_read_u8(m);
+        instr.op1    = magic_buf_read_operand_bin(m);
+        instr.op2    = magic_buf_read_operand_bin(m);
+        block_add(b, instr);
+    }
+    return 1;
+}
+
+int magic_load_agic_from_buffer(const unsigned char *data, size_t len,
+                                ExecutableUnit *unit)
+{
+    if (!data || len < 4)
+        return 0;
+    if (data[0] != 'A' || data[1] != 'G' || data[2] != 'I' || data[3] != 'C')
+        return 0;
+
+    MagicAgicBuf m;
+    m.b = data;
+    m.len = len;
+    m.pos = 4;
+
+    memset(unit, 0, sizeof(*unit));
+    magic_buf_read_str(&m, unit->version, NAME_MAX_LEN);
+    magic_buf_read_str(&m, unit->name, NAME_MAX_LEN);
+    magic_buf_read_str(&m, unit->module, NAME_MAX_LEN);
+    magic_buf_read_str(&m, unit->system_name, NAME_MAX_LEN);
+
+    uint32_t proc_count = magic_buf_read_u32(&m);
+    for (uint32_t i = 0; i < proc_count && i < MAX_PROCS; i++) {
+        magic_buf_read_str(&m, unit->procedures[i].name, PROC_NAME_MAX);
+        magic_buf_read_block_bin(&m, &unit->procedures[i].body);
+        unit->proc_count++;
+    }
+
+    uint32_t func_count = magic_buf_read_u32(&m);
+    for (uint32_t i = 0; i < func_count && i < MAX_PROCS; i++) {
+        magic_buf_read_str(&m, unit->functions[i].name, PROC_NAME_MAX);
+        magic_buf_read_block_bin(&m, &unit->functions[i].body);
+        unit->func_count++;
+    }
+
+    magic_buf_read_block_bin(&m, &unit->entry_point);
     return 1;
 }
 

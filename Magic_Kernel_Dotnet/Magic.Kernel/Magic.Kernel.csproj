@@ -7,13 +7,26 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>Magic.Kernel2</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>Magic.Kernel.Tests2</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+  <ItemGroup>
     <Folder Include="Functions\" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\Magic.Drivers.Inference.OpenAI\Magic.Drivers.Inference.OpenAI.csproj" />
+    <ProjectReference Include="..\Magic.Drivers.Inference.DeepSeek\Magic.Drivers.Inference.DeepSeek.csproj" />
     <ProjectReference Include="..\Magic.Drivers.Telegram\Magic.Drivers.Telegram.csproj" />
+    <ProjectReference Include="..\Magic.Drivers.WTelegram\Magic.Drivers.WTelegram.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Npgsql" Version="10.0.1" />
+    <PackageReference Include="Microsoft.IdentityModel.Tokens" Version="6.16.0" />
+    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="6.16.0" />
   </ItemGroup>
 
 </Project>

@@ -7,13 +7,16 @@ namespace Magic.Kernel.Compilation
     public class Scanner
     {
         private readonly string _source;
+        private readonly bool _emitLineComments;
         private readonly List<Token> _tokens = new List<Token>();
         private int _position;
         private int _index;
 
-        public Scanner(string source)
+        /// <param name="emitLineComments">Если true, <c>//</c> … конец строки становится токеном <see cref="TokenKind.LineComment"/> (для подсветки). Иначе комментарии пропускаются, как при разборе.</param>
+        public Scanner(string source, bool emitLineComments = false)
         {
             _source = source ?? string.Empty;
+            _emitLineComments = emitLineComments;
             _index = 0;
             _position = 0;
             ScanAll();
@@ -56,6 +59,31 @@ namespace Magic.Kernel.Compilation
             return _source.Substring(start, end - start);
         }
 
+        /// <summary>1-based номер строки для смещения в исходнике (как в ошибках компилятора: считаются только \n).</summary>
+        public int GetLineNumber(int offset)
+        {
+            if (offset <= 0)
+            {
+                return 1;
+            }
+
+            if (offset > _source.Length)
+            {
+                offset = _source.Length;
+            }
+
+            var line = 1;
+            for (var i = 0; i < offset; i++)
+            {
+                if (_source[i] == '\n')
+                {
+                    line++;
+                }
+            }
+
+            return line;
+        }
+
         private void ScanAll()
         {
             _tokens.Clear();
@@ -63,7 +91,19 @@ namespace Magic.Kernel.Compilation
             SkipWhitespace();
             while (_index < _source.Length)
             {
-                SkipLineComment();
+                if (_emitLineComments)
+                {
+                    if (TryScanLineCommentAsToken())
+                    {
+                        SkipWhitespace();
+                        continue;
+                    }
+                }
+                else
+                {
+                    SkipLineComment();
+                }
+
                 if (_index >= _source.Length) break;
                 var tok = ScanOne();
                 _tokens.Add(tok);
@@ -73,6 +113,28 @@ namespace Magic.Kernel.Compilation
             }
             _tokens.Add(Token.Eof(_index));
             _position = 0;
+        }
+
+        private bool TryScanLineCommentAsToken()
+        {
+            if (!_emitLineComments ||
+                _index + 1 >= _source.Length ||
+                _source[_index] != '/' ||
+                _source[_index + 1] != '/')
+            {
+                return false;
+            }
+
+            var start = _index;
+            _index += 2;
+            while (_index < _source.Length && _source[_index] != '\n' && _source[_index] != '\r')
+            {
+                _index++;
+            }
+
+            var raw = _source.Substring(start, _index - start);
+            _tokens.Add(new Token(TokenKind.LineComment, raw, start, _index));
+            return true;
         }
 
         private void SkipLineComment()
@@ -219,9 +281,12 @@ namespace Magic.Kernel.Compilation
                     break;
                 }
 
-                // "Db> : ..." -> consume '>' as symbolic suffix when declaration-like boundary follows
+                // "Db> : ..." -> consume '>' as symbolic suffix when declaration-like boundary follows.
+                // Skip when the identifier opens a generic type arg (`float<decimal>:`): '>' must stay a token.
                 if (_source[i] == '>' && NextNonWhitespaceChar(i + 1) == ':')
                 {
+                    if (start > 0 && _source[start - 1] == '<')
+                        break;
                     i += 1;
                     consumedSymbolicSuffix = true;
                     break;

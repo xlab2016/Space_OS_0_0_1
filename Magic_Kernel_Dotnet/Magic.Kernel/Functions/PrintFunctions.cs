@@ -2,27 +2,69 @@ using Magic.Kernel.Processor;
 using Magic.Kernel.Space;
 using Magic.Kernel.Devices;
 using Magic.Kernel;
+using Magic.Kernel.Core;
+using Magic.Kernel.Types;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.Threading.Tasks;
 
 namespace Magic.Kernel.Functions
 {
     public class PrintFunctions
     {
+        // Keep console output readable, but avoid truncating normal text payloads.
+        private const int MaxPrintedStringLength = 1024;
+        private const int PrintedStringPrefixLength = 256;
+        private const int PrintedStringSuffixLength = 128;
+
         private readonly KernelConfiguration? _configuration;
         private readonly List<object> _stack;
-        private readonly Dictionary<long, object>? _memory;
+        private readonly Func<MemoryAddress, (bool Found, object? Value)> _memoryReader;
+        private readonly Compilation.ExecutableUnit? _currentUnit;
 
         public PrintFunctions(KernelConfiguration? configuration, List<object> stack, Dictionary<long, object>? memory = null)
+            : this(
+                configuration,
+                stack,
+                memoryAddress =>
+                {
+                    if (memory != null &&
+                        memoryAddress.Index.HasValue &&
+                        memory.TryGetValue(memoryAddress.Index.Value, out var memoryValue))
+                    {
+                        return (true, memoryValue);
+                    }
+
+                    return (false, null);
+                })
+        {
+        }
+
+        public PrintFunctions(
+            KernelConfiguration? configuration,
+            List<object> stack,
+            Func<MemoryAddress, (bool Found, object? Value)> memoryReader,
+            Compilation.ExecutableUnit? currentUnit = null)
         {
             _configuration = configuration;
             _stack = stack;
-            _memory = memory;
+            _memoryReader = memoryReader ?? throw new ArgumentNullException(nameof(memoryReader));
+            _currentUnit = currentUnit;
         }
 
-        public async Task ExecutePrintAsync(CallInfo callInfo)
+        public Task ExecutePrintAsync(CallInfo callInfo)
+        {
+            return ExecutePrintInternalAsync(callInfo, includeDebugPrefix: false);
+        }
+
+        public Task ExecutePrintdAsync(CallInfo callInfo)
+        {
+            return ExecutePrintInternalAsync(callInfo, includeDebugPrefix: true);
+        }
+
+        private async Task ExecutePrintInternalAsync(CallInfo callInfo, bool includeDebugPrefix)
         {
             var valuesToPrint = new List<object?>();
             var indexedArgs = callInfo.Parameters
@@ -51,7 +93,8 @@ namespace Magic.Kernel.Functions
                 throw new InvalidOperationException("Print function requires a value parameter.");
             }
 
-            var prefix = Magic.Kernel.Interpretation.ExecutionContext.GetPrefix();
+            var prefix = includeDebugPrefix ? Core.ExecutionCallContext.GetPrefix(_currentUnit) : string.Empty;
+            var isPrintln = string.Equals(callInfo.FunctionName, "println", StringComparison.OrdinalIgnoreCase);
 
             // Проверяем тип вывода
             var outputType = "console";
@@ -98,7 +141,13 @@ namespace Magic.Kernel.Functions
                 var formattedOutput = valuesToPrint.Count == 1
                     ? FormatValue(valuesToPrint[0] ?? "null")
                     : string.Join(" | ", valuesToPrint.Select((value, index) => $"arg{index}: {FormatValue(value ?? "null")}"));
-                Console.WriteLine(prefix + formattedOutput);
+                if (isPrintln)
+                    Console.WriteLine(prefix + formattedOutput);
+                else
+                {
+                    Console.Write(prefix + formattedOutput);
+                    Console.Out.Flush();
+                }
             }
         }
 
@@ -106,6 +155,8 @@ namespace Magic.Kernel.Functions
         {
             return value switch
             {
+                DefObject defObj => JsonSerializer.Serialize(defObj.ToJsonMapBySchemaFieldNames(includeTypeDiscriminator: true, _currentUnit?.Types)),
+                string str => FormatString(str),
                 Position pos => FormatPosition(pos),
                 Shape shape => FormatShape(shape),
                 Vertex vertex => FormatVertex(vertex),
@@ -116,6 +167,32 @@ namespace Magic.Kernel.Functions
                 null => "None",
                 _ => value.ToString() ?? "null"
             };
+        }
+
+        private object? AgiValueToJsonTree(object? v)
+        {
+            if (v == null)
+                return null;
+            if (v is DefObject d)
+                return d.ToJsonMapBySchemaFieldNames(includeTypeDiscriminator: true, _currentUnit?.Types);
+            if (v is DefList list)
+                return list.Items.Select(AgiValueToJsonTree).ToList();
+            if (v is string or bool or long or int or short or byte or decimal or double or float)
+                return v;
+            return v.ToString();
+        }
+
+        private static string FormatString(string value)
+        {
+            if (value.Length <= MaxPrintedStringLength)
+                return value;
+
+            var prefixLength = Math.Min(PrintedStringPrefixLength, value.Length);
+            var suffixLength = Math.Min(PrintedStringSuffixLength, Math.Max(0, value.Length - prefixLength));
+            var prefix = value[..prefixLength];
+            var suffix = suffixLength > 0 ? value[^suffixLength..] : string.Empty;
+
+            return $"{prefix}...{suffix}...[truncated]";
         }
 
         private string FormatPosition(Position pos)
@@ -268,7 +345,7 @@ namespace Magic.Kernel.Functions
                 {
                     if (_configuration?.DefaultDisk != null)
                     {
-                        var sn = Magic.Kernel.Interpretation.ExecutionContext.CurrentUnit?.SpaceName;
+                        var sn = _currentUnit?.SpaceName;
                         switch (entityType)
                         {
                             case EntityType.Vertex:
@@ -284,10 +361,12 @@ namespace Magic.Kernel.Functions
             else if (param is MemoryAddress memoryAddress && memoryAddress.Index.HasValue)
             {
                 // Параметр из памяти
-                if (_memory != null && _memory.TryGetValue(memoryAddress.Index.Value, out var memoryValue))
+                var memoryResult = _memoryReader(memoryAddress);
+                if (memoryResult.Found)
                 {
-                    return memoryValue;
+                    return memoryResult.Value;
                 }
+
                 return param;
             }
 

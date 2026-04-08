@@ -1,9 +1,9 @@
 namespace Magic.Kernel.Processor
 {
-    /// <summary>Operand for Push: slot [n], type literal (stream, file), int literal (arity), or string literal.</summary>
+    /// <summary>Operand for Push: slot [n], type literal, int literal, string literal, address literal, or lambda arg.</summary>
     public class PushOperand
     {
-        public string Kind { get; set; } = "Slot"; // Slot | Type | IntLiteral | StringLiteral
+        public string Kind { get; set; } = "Slot"; // Slot | Type | IntLiteral | StringLiteral | AddressLiteral | LambdaArg
         public object? Value { get; set; }
 
         public override string ToString()

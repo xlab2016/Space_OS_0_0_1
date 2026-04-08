@@ -67,11 +67,14 @@ namespace Magic.Drivers.Telegram.Services
             if (callbackQuery != null)
                 await botClient.AnswerCallbackQuery(callbackQuery.Id);
 
+            var displayName = TelegramMessageSender.GetDisplayName(message);
             var messageInfo = new MessageInfo
             {
                 Text = callbackData ?? message.Text,
                 ChatId = message.Chat.Id,
-                Username = message.Chat?.Username ?? $"user_chatid_{message.Chat.Id}",
+                Username = !string.IsNullOrEmpty(displayName)
+                    ? displayName
+                    : (message.Chat?.Username ?? $"user_chatid_{message.Chat.Id}"),
                 Contact = message.Contact != null
                     ? new ContactInfo
                     {

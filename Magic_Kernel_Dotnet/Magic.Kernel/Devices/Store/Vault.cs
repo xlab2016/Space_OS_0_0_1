@@ -10,6 +10,9 @@ using Magic.Kernel.Interpretation;
 
 namespace Magic.Kernel.Devices.Store
 {
+    /// <summary>Один блок в vault.json для инспектора отладчика.</summary>
+    public sealed record VaultDebugSection(string Program, string System, string Module, int InstanceIndex, IReadOnlyDictionary<string, object> Store);
+
     public class Vault : IDefType
     {
         /// <summary>Unit that created this Vault; used for SpaceName/path resolution.</summary>
@@ -22,6 +25,83 @@ namespace Magic.Kernel.Devices.Store
 
         private List<VaultEntry>? _entries;
         private readonly object _loadLock = new object();
+
+        /// <summary>
+        /// Снимок vault для инспектора: при известной позиции юнита — одна секция, совпадающая с vault.read (program/system/module/instance);
+        /// иначе все секции из файла (нет привязки к unit).
+        /// </summary>
+        public IReadOnlyList<VaultDebugSection> GetDebugSections()
+        {
+            if (!TryGetVaultIdentity(out var prog, out var sys, out var mod))
+                return GetEntries().Select(ToDebugSection).ToList();
+
+            var entry = PickMatchingEntry(prog, sys, mod, GetVaultInstanceIndexForMatch());
+            if (entry == null)
+                return Array.Empty<VaultDebugSection>();
+
+            return new List<VaultDebugSection> { ToDebugSection(entry) };
+        }
+
+        private static VaultDebugSection ToDebugSection(VaultEntry e)
+            => new(e.Program, e.System, e.Module, e.InstanceIndex,
+                new Dictionary<string, object>(e.Store, StringComparer.OrdinalIgnoreCase));
+
+        /// <summary>Имена в том же порядке, что и при сопоставлении в <see cref="CallObjAsync"/> (read).</summary>
+        private bool TryGetVaultIdentity(out string prog, out string sys, out string mod)
+        {
+            prog = "";
+            sys = "";
+            mod = "";
+            var names = Position?.IndexNames;
+            if (names != null && names.Count >= 3)
+            {
+                sys = names[0] ?? "";
+                mod = names[1] ?? "";
+                prog = names[2] ?? "";
+                return !string.IsNullOrEmpty(prog) || !string.IsNullOrEmpty(sys) || !string.IsNullOrEmpty(mod);
+            }
+
+            if (ExecutableUnit != null)
+            {
+                sys = ExecutableUnit.System ?? "";
+                mod = ExecutableUnit.Module ?? "";
+                prog = ExecutableUnit.Name ?? "";
+                return !string.IsNullOrEmpty(prog) || !string.IsNullOrEmpty(sys) || !string.IsNullOrEmpty(mod);
+            }
+
+            return false;
+        }
+
+        private int? GetVaultInstanceIndexForMatch()
+        {
+            var fromPos = GetPositionInstanceIndex();
+            if (fromPos.HasValue)
+                return fromPos;
+            return ExecutableUnit?.InstanceIndex;
+        }
+
+        private VaultEntry? PickMatchingEntry(string prog, string sys, string mod, int? instanceIndex)
+        {
+            var candidates = GetEntries().Where(e =>
+                string.Equals(e.Program, prog, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(e.System, sys, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(e.Module, mod, StringComparison.OrdinalIgnoreCase)).ToList();
+
+            if (candidates.Count == 0)
+                return null;
+
+            VaultEntry? entry = null;
+            if (instanceIndex.HasValue)
+            {
+                entry = candidates.FirstOrDefault(e => e.InstanceIndex == instanceIndex.Value);
+                entry ??= candidates.FirstOrDefault(e => e.InstanceIndex == 0);
+            }
+            else
+                entry = candidates.FirstOrDefault(e => e.InstanceIndex == 0);
+
+            entry ??= candidates.FirstOrDefault();
+            return entry;
+        }
 
         private List<VaultEntry> GetEntries()
         {
@@ -118,30 +198,7 @@ namespace Magic.Kernel.Devices.Store
                     var p = program ?? "";
                     var s = system ?? "";
                     var m = module ?? "";
-                    var entries = GetEntries();
-                    var positionInstanceIndex = GetPositionInstanceIndex();
-                    var candidates = entries.Where(e =>
-                        string.Equals(e.Program, p, StringComparison.OrdinalIgnoreCase) &&
-                        string.Equals(e.System, s, StringComparison.OrdinalIgnoreCase) &&
-                        string.Equals(e.Module, m, StringComparison.OrdinalIgnoreCase)).ToList();
-
-                    VaultEntry? entry = null;
-
-                    if (positionInstanceIndex.HasValue)
-                    {
-                        // 1) Exact match by instanceIndex
-                        entry = candidates.FirstOrDefault(e => e.InstanceIndex == positionInstanceIndex.Value);
-                        // 2) Fallback to instanceIndex == 0 for backward-compat configs
-                        entry ??= candidates.FirstOrDefault(e => e.InstanceIndex == 0);
-                    }
-                    else
-                    {
-                        // No instance index in position: prefer instanceIndex == 0 when present
-                        entry = candidates.FirstOrDefault(e => e.InstanceIndex == 0);
-                    }
-
-                    // 3) Final fallback: any matching entry
-                    entry ??= candidates.FirstOrDefault();
+                    var entry = PickMatchingEntry(p, s, m, GetPositionInstanceIndex());
 
                     var store = entry?.Store;
                     if (store != null && !string.IsNullOrWhiteSpace(key) && store.TryGetValue(key, out var value))

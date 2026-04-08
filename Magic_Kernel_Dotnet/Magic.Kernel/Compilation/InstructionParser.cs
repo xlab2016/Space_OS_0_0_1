@@ -92,6 +92,7 @@ namespace Magic.Kernel.Compilation
             switch (instruction.Opcode)
             {
                 case "call":
+                case "acall":
                     instruction.Parameters = ParseCallParametersFromTokens();
                     break;
                 case "pop":
@@ -101,6 +102,7 @@ namespace Magic.Kernel.Compilation
                     instruction.Parameters = ParsePushParametersFromTokens();
                     break;
                 case "def":
+                case "defobj":
                 case "awaitobj":
                 case "await":
                 case "streamwaitobj":
@@ -108,7 +110,20 @@ namespace Magic.Kernel.Compilation
                 case "getobj":
                 case "setobj":
                 case "streamwait":
+                case "expr":
+                case "defexpr":
+                case "equals":
+                case "not":
+                case "lt":
+                case "add":
+                case "sub":
+                case "mul":
+                case "div":
+                case "pow":
                     instruction.Parameters = new List<ParameterNode>();
+                    break;
+                case "lambda":
+                    instruction.Parameters = ParseLambdaParametersFromTokens();
                     break;
                 case "callobj":
                     instruction.Parameters = ParseCallObjParametersFromTokens();
@@ -245,11 +260,47 @@ namespace Magic.Kernel.Compilation
             }
             if (_scanner.Current.Kind == TokenKind.LBracket)
                 return ParseMemoryParametersFromTokens();
+            if (_scanner.Current.Kind == TokenKind.Identifier && _scanner.Current.Value.Equals("lambda", StringComparison.OrdinalIgnoreCase))
+            {
+                _scanner.Scan();
+                Expect(TokenKind.Colon);
+                if (_scanner.Current.Kind != TokenKind.Identifier)
+                    throw new CompilationException($"Expected lambda arg name (e.g. arg0) at position {_scanner.Current.Start}.", _scanner.Current.Start);
+                var argName = _scanner.Scan().Value;
+                var index = 0;
+                if (argName.Length > 3 && argName.StartsWith("arg", StringComparison.OrdinalIgnoreCase) && int.TryParse(argName.Substring(3), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+                    index = parsed;
+                return new List<ParameterNode> { new LambdaArgParameterNode { Name = "lambda", Index = index } };
+            }
             if (_scanner.Current.Kind == TokenKind.Identifier && _scanner.Current.Value.Equals("string", StringComparison.OrdinalIgnoreCase))
             {
-                Sequence((TokenKind.Identifier, "string"), (TokenKind.Colon, null));
+                _scanner.Scan(); // consume "string"
+                // Support both "push string: value" (with colon) and "push string value" (without colon)
+                if (_scanner.Current.Kind == TokenKind.Colon)
+                    _scanner.Scan(); // consume optional ":"
                 var strTok = Expect(TokenKind.StringLiteral);
                 return new List<ParameterNode> { new StringParameterNode { Name = "string", Value = strTok.Value } };
+            }
+            if (_scanner.Current.Kind == TokenKind.Identifier && _scanner.Current.Value.Equals("class", StringComparison.OrdinalIgnoreCase))
+            {
+                _scanner.Scan(); // consume "class"
+                if (_scanner.Current.Kind == TokenKind.Colon)
+                    _scanner.Scan(); // consume optional ":"
+                var classTok = Expect(TokenKind.StringLiteral);
+                return new List<ParameterNode> { new ClassLiteralParameterNode { Name = "class", ClassName = classTok.Value } };
+            }
+            if (_scanner.Current.Kind == TokenKind.Identifier && _scanner.Current.Value.Equals("address", StringComparison.OrdinalIgnoreCase))
+            {
+                // push address: "call"
+                _scanner.Scan(); // consume "address"
+                if (_scanner.Current.Kind == TokenKind.Colon)
+                    _scanner.Scan(); // consume optional ":"
+
+                var strTok = Expect(TokenKind.StringLiteral);
+                return new List<ParameterNode>
+                {
+                    new AddressLiteralParameterNode { Name = "address", Address = strTok.Value }
+                };
             }
             if (_scanner.Current.Kind == TokenKind.Number)
             {
@@ -269,6 +320,32 @@ namespace Magic.Kernel.Compilation
                     return new List<ParameterNode> { new IndexParameterNode { Name = "int", Value = numVal } };
             }
             return new List<ParameterNode>();
+        }
+
+        private List<ParameterNode> ParseLambdaParametersFromTokens()
+        {
+            SkipOptionalComma();
+            var parameters = new List<string>();
+            while (!_scanner!.Current.IsEndOfInput)
+            {
+                if (_scanner.Current.Kind != TokenKind.Identifier)
+                    break;
+
+                parameters.Add(_scanner.Scan().Value);
+                SkipOptionalComma();
+            }
+
+            if (parameters.Count == 0)
+                return new List<ParameterNode>();
+
+            return new List<ParameterNode>
+            {
+                new LambdaParametersParameterNode
+                {
+                    Name = "lambda",
+                    Parameters = parameters
+                }
+            };
         }
 
         private List<ParameterNode> ParseCallParametersFromTokens()
